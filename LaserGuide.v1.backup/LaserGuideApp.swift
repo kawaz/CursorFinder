@@ -6,10 +6,9 @@ struct LaserGuideApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        // メニューバーアプリなので、メインウィンドウは不要
-        Settings {
+        WindowGroup {
             EmptyView()
+                .frame(width: 0, height: 0)
         }
     }
 }
-
