@@ -10,7 +10,7 @@ enum EdgeSide: String, Codable, CaseIterable {
 }
 
 /// セグメント範囲
-struct SegmentRange: Codable, Hashable {
+struct SegmentRange: Codable {
     let start: Double
     let end: Double
 
@@ -32,7 +32,7 @@ struct SegmentRange: Codable, Hashable {
 }
 
 /// Pass可能なセグメント
-struct PassSegment: Identifiable, Codable, Hashable {
+class PassSegment: Identifiable, Codable {
     let id: UUID
     let displayId: UUID  // このSegmentが属するDisplay（JSON保存必須）
     let side: EdgeSide
@@ -53,7 +53,7 @@ struct PassSegment: Identifiable, Codable, Hashable {
 
     // 実行時キャッシュ（private → JSON保存から除外）
     private var _display: Display?
-    private var _pairedSegment: PassSegment?
+    private weak var _pairedSegment: PassSegment?
 
     var display: Display? {
         get { _display }
@@ -155,7 +155,7 @@ struct EdgeNavigationMap {
         }
 
         // ペアのSegmentを取得
-        guard let (targetDisplay, pairedSegment) = segment(withId: segment.pairedSegmentId) else {
+        guard let (targetDisplay, pairedSegment) = self.segment(withId: segment.pairedSegmentId) else {
             return nil
         }
 

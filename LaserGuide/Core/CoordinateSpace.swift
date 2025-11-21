@@ -59,6 +59,9 @@ extension CoordinateSpace {
             return logicalToPhysical(point, context: context)
         case (.physical, .logical):
             return physicalToLogical(point, context: context)
+        default:
+            // 同じ座標空間（上のif文で処理済み）
+            return point
         }
     }
 

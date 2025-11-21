@@ -8,15 +8,15 @@ struct Display: Identifiable, Codable {
     var coordinates: CoordinatesInfo
     var display: DisplayInfo
     var visual: VisualInfo
-    
+
     // OS標準のPassSegment（論理的隣接範囲、PP/PB/BP/BB判定に使用）
     var osPassSegments: [PassSegment]
-    
+
     // ユーザー設定のPassSegment（実際の越境に使用）
     var passSegments: [PassSegment]
-    
+
     // MARK: - Nested Types
-    
+
     /// ハードウェア情報
     struct HardwareInfo: Codable {
         let fingerprint: String  // "000006100000A051FD626D62-3456x2234x1"
@@ -28,47 +28,47 @@ struct Display: Identifiable, Codable {
         let serialNumber: UInt32
         let serialNumberHex: String
     }
-    
+
     /// Codable版インセット（NSEdgeInsetsのシリアライズ可能版）
     struct CoordinateInsets: Codable {
         let top: CGFloat
         let left: CGFloat
         let bottom: CGFloat
         let right: CGFloat
-        
+
         init(_ nsInsets: NSEdgeInsets) {
             self.top = nsInsets.top
             self.left = nsInsets.left
             self.bottom = nsInsets.bottom
             self.right = nsInsets.right
         }
-        
+
         init(top: CGFloat, left: CGFloat, bottom: CGFloat, right: CGFloat) {
             self.top = top
             self.left = left
             self.bottom = bottom
             self.right = right
         }
-        
+
         static var zero: CoordinateInsets {
             CoordinateInsets(top: 0, left: 0, bottom: 0, right: 0)
         }
     }
-    
+
     /// 座標フレーム
     struct CoordinateFrame: Codable {
-        let position: CGPoint
-        let size: CGSize
-        let visibleFrame: CGRect
-        let safeAreaInsets: CoordinateInsets
+        var position: CGPoint
+        var size: CGSize
+        var visibleFrame: CGRect
+        var safeAreaInsets: CoordinateInsets
     }
-    
+
     /// 座標情報（論理+物理）
     struct CoordinatesInfo: Codable {
         var logical: CoordinateFrame
         var physical: CoordinateFrame
     }
-    
+
     /// ディスプレイ情報
     struct DisplayInfo: Codable {
         let isMain: Bool
@@ -77,7 +77,7 @@ struct Display: Identifiable, Codable {
         let resolution: ResolutionInfo
         let refreshRate: Double
     }
-    
+
     /// 解像度情報
     struct ResolutionInfo: Codable {
         let points: CGSize
@@ -85,7 +85,7 @@ struct Display: Identifiable, Codable {
         let backingScaleFactor: CGFloat
         let ppi: Double
     }
-    
+
     /// ビジュアル情報
     struct VisualInfo: Codable {
         let colorSpaceName: String?
@@ -105,14 +105,14 @@ extension Display {
     static func create(from screen: NSScreen, physicalPosition: Point2D = .zero) -> Display {
         let deviceDescription = screen.deviceDescription
         let displayID = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! CGDirectDisplayID
-        
+
         // ハードウェア情報
         let vendorID = CGDisplayVendorNumber(displayID)
         let modelID = CGDisplayModelNumber(displayID)
         let serialNumber = CGDisplaySerialNumber(displayID)
-        
+
         let fingerprint = DisplayFingerprint(screen: screen)
-        
+
         let hardware = HardwareInfo(
             fingerprint: fingerprint.stringRepresentation,
             displayID: displayID,
@@ -123,12 +123,12 @@ extension Display {
             serialNumber: serialNumber,
             serialNumberHex: String(format: "%08X", serialNumber)
         )
-        
+
         // 物理サイズとPPI
         let physicalSizeCG = CGDisplayScreenSize(displayID)
         let pixelWidth = screen.frame.size.width * screen.backingScaleFactor
         let calculatedPPI = physicalSizeCG.width > 0 ? pixelWidth / (physicalSizeCG.width / 25.4) : 0
-        
+
         // リフレッシュレート
         let refreshRate: Double
         if let mode = CGDisplayCopyDisplayMode(displayID) {
@@ -136,28 +136,28 @@ extension Display {
         } else {
             refreshRate = 0
         }
-        
+
         // 物理座標のvisibleFrameとsafeAreaInsetsを補完
         let logicalFrame = screen.frame
         let logicalVisibleFrame = screen.visibleFrame
         let logicalSafeAreaInsets = screen.safeAreaInsets
-        
+
         let physicalSize = Size2D(physicalSizeCG)
-        
+
         let physicalVisibleFrame = CGRect(
             x: physicalPosition.x + (logicalVisibleFrame.minX - logicalFrame.minX) / logicalFrame.width * physicalSize.width,
             y: physicalPosition.y + (logicalVisibleFrame.minY - logicalFrame.minY) / logicalFrame.height * physicalSize.height,
             width: logicalVisibleFrame.width / logicalFrame.width * physicalSize.width,
             height: logicalVisibleFrame.height / logicalFrame.height * physicalSize.height
         )
-        
+
         let physicalSafeAreaInsets = CoordinateInsets(
             top: logicalSafeAreaInsets.top / logicalFrame.height * physicalSize.height,
             left: logicalSafeAreaInsets.left / logicalFrame.width * physicalSize.width,
             bottom: logicalSafeAreaInsets.bottom / logicalFrame.height * physicalSize.height,
             right: logicalSafeAreaInsets.right / logicalFrame.width * physicalSize.width
         )
-        
+
         // 座標情報
         let coordinates = CoordinatesInfo(
             logical: CoordinateFrame(
@@ -173,7 +173,7 @@ extension Display {
                 safeAreaInsets: physicalSafeAreaInsets
             )
         )
-        
+
         // ディスプレイ情報
         let displayInfo = DisplayInfo(
             isMain: screen == NSScreen.main,
@@ -190,7 +190,7 @@ extension Display {
             ),
             refreshRate: refreshRate
         )
-        
+
         // ビジュアル情報
         let visual = VisualInfo(
             colorSpaceName: deviceDescription[NSDeviceDescriptionKey("NSDeviceColorSpaceName")] as? String,
@@ -201,7 +201,7 @@ extension Display {
             hdrMaxPotentialValue: screen.maximumPotentialExtendedDynamicRangeColorComponentValue,
             hdrMaxReferenceValue: screen.maximumReferenceExtendedDynamicRangeColorComponentValue
         )
-        
+
         return Display(
             id: UUID(),
             hardware: hardware,

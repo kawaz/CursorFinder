@@ -38,16 +38,16 @@ class EdgeCrossingDetector {
         // 各エッジとの距離をチェック（実座標値を返す）
         if relativeY <= threshold {
             // Bottom edge
-            return (currentDisplay.id, .bottom, relativeX)
+            return (currentDisplay.id, .bottom, Double(relativeX))
         } else if relativeY >= frame.size.height - threshold {
             // Top edge
-            return (currentDisplay.id, .top, relativeX)
+            return (currentDisplay.id, .top, Double(relativeX))
         } else if relativeX <= threshold {
             // Left edge
-            return (currentDisplay.id, .left, relativeY)
+            return (currentDisplay.id, .left, Double(relativeY))
         } else if relativeX >= frame.size.width - threshold {
             // Right edge
-            return (currentDisplay.id, .right, relativeY)
+            return (currentDisplay.id, .right, Double(relativeY))
         }
 
         return nil
