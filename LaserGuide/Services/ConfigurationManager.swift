@@ -117,11 +117,21 @@ class ConfigurationManager {
             NSLog("📂 既存のWorkspace設定を読み込み: \(config.configurationKey)")
 
             // 現在のスクリーン情報とマージ（論理座標を更新）
-            return mergeWithCurrentScreens(config)
+            let merged = mergeWithCurrentScreens(config)
+            
+            // マージ後の設定を保存（論理座標の更新を反映）
+            saveWorkspace(merged)
+            
+            return merged
         } else {
             NSLog("🆕 デフォルトのWorkspace設定を作成")
             let screens = NSScreen.screens
-            return WorkspaceConfiguration.createDefault(screens: screens)
+            let newConfig = WorkspaceConfiguration.createDefault(screens: screens)
+            
+            // 新規作成した設定を自動保存
+            saveWorkspace(newConfig)
+            
+            return newConfig
         }
     }
 

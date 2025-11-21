@@ -8,13 +8,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let displayDetector = DisplayDetector.shared
     private let mouseTracker = MouseTracker.shared
+    private let edgeCrossingDetector = EdgeCrossingDetector.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("🚀 LaserGuide v2 started")
 
+        // AppConfigurationを初期化（存在しない場合はデフォルト作成）
+        let workspaceKey = displayDetector.workspace.configurationKey
+        let _ = AppConfigurationManager.shared.loadOrCreateConfiguration(workspaceKey: workspaceKey)
+
         // サービスを開始
         displayDetector.startMonitoring()
         mouseTracker.startTracking()
+        edgeCrossingDetector.startMonitoring()
 
         // レーザーウィンドウを作成
         setupLaserWindows()
@@ -38,6 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         displayDetector.stopMonitoring()
         mouseTracker.stopTracking()
+        edgeCrossingDetector.stopMonitoring()
 
         // レーザーウィンドウを閉じる
         laserWindowControllers.forEach { $0.close() }

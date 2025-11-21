@@ -72,6 +72,19 @@ class PassSegment: Identifiable, Codable {
             }
         }
     }
+    
+    // Codable: エンコード対象を明示的に指定
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayId
+        case side
+        case logical
+        case physical
+        case pairedSegmentId
+        case pairedDisplayId
+        case pairedDisplayName
+        case pairedSide
+    }
 
     init(
         id: UUID = UUID(),

@@ -149,6 +149,19 @@ class AppConfigurationManager {
         }
     }
     
+    /// 設定を読み込み（存在しない場合はデフォルト作成・保存）
+    func loadOrCreateConfiguration(workspaceKey: String) -> AppConfiguration {
+        if let config = loadConfiguration() {
+            NSLog("📂 既存のAppConfiguration を読み込み")
+            return config
+        } else {
+            NSLog("🆕 デフォルトのAppConfiguration を作成")
+            let newConfig = getDefaultConfiguration(workspaceKey: workspaceKey)
+            saveConfiguration(newConfig)
+            return newConfig
+        }
+    }
+    
     /// 設定を保存
     func saveConfiguration(_ config: AppConfiguration) {
         do {

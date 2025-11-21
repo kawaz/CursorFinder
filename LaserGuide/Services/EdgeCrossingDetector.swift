@@ -7,6 +7,17 @@ class EdgeCrossingDetector {
 
     private let displayDetector = DisplayDetector.shared
     private let mouseTracker = MouseTracker.shared
+    
+    // CGEventTap関連
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private var isEnabled: Bool = false
+    
+    // エッジ検出の閾値
+    private let edgeThreshold: CGFloat = 5.0
+    
+    // デバッグ用: 越境カウント
+    private var crossingCount: Int = 0
 
     private init() {}
 
@@ -94,5 +105,110 @@ class EdgeCrossingDetector {
         NSLog("✅ 越境成功: pos=\(String(format: "%.1f", targetPosition))")
 
         return (targetDisplay, targetPoint)
+    }
+    
+    /// エッジ越境監視を開始
+    func startMonitoring() {
+        guard !isEnabled else {
+            NSLog("⚠️ EdgeCrossingDetector already started")
+            return
+        }
+        
+        // アクセシビリティ権限チェック
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        let isTrusted = AXIsProcessTrustedWithOptions(options as CFDictionary)
+        
+        guard isTrusted else {
+            NSLog("❌ アクセシビリティ権限が必要です")
+            return
+        }
+        
+        // CGEventTapを作成
+        let eventMask = (1 << CGEventType.mouseMoved.rawValue)
+        
+        guard let tap = CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+                guard let refcon = refcon else { return Unmanaged.passRetained(event) }
+                let detector = Unmanaged<EdgeCrossingDetector>.fromOpaque(refcon).takeUnretainedValue()
+                return detector.handleMouseEvent(proxy: proxy, type: type, event: event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            NSLog("❌ CGEventTap の作成に失敗")
+            return
+        }
+        
+        eventTap = tap
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        
+        if let source = runLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            isEnabled = true
+            NSLog("✅ EdgeCrossingDetector started")
+        } else {
+            NSLog("❌ RunLoopSource の作成に失敗")
+        }
+    }
+    
+    /// エッジ越境監視を停止
+    func stopMonitoring() {
+        guard isEnabled else { return }
+        
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+        }
+        
+        eventTap = nil
+        runLoopSource = nil
+        isEnabled = false
+        NSLog("🛑 EdgeCrossingDetector stopped")
+    }
+    
+    /// マウスイベントハンドラ
+    private func handleMouseEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // エッジナビゲーションが無効の場合はスルー
+        guard let appConfig = AppConfigurationManager.shared.loadConfiguration(),
+              appConfig.edgeNavigation.enabled else {
+            return Unmanaged.passRetained(event)
+        }
+        
+        // 現在のマウス位置を取得
+        let location = event.location
+        
+        // エッジ付近かチェック
+        guard let edgeInfo = detectEdgeProximity(at: location, threshold: edgeThreshold) else {
+            return Unmanaged.passRetained(event)
+        }
+        
+        // 越境処理
+        guard let (targetDisplay, targetPosition) = handleCrossing(
+            displayId: edgeInfo.displayId,
+            side: edgeInfo.side,
+            position: edgeInfo.normalizedPosition
+        ) else {
+            // Block時はそのまま返す（エッジでストップ）
+            return Unmanaged.passRetained(event)
+        }
+        
+        // マウス座標を書き換え
+        event.location = targetPosition
+        crossingCount += 1
+        
+        NSLog("🚀 越境実行 [\(crossingCount)]: \(edgeInfo.side) → \(targetDisplay.display.name) @ (\(String(format: "%.1f", targetPosition.x)), \(String(format: "%.1f", targetPosition.y)))")
+        
+        return Unmanaged.passRetained(event)
+    }
+    
+    deinit {
+        stopMonitoring()
     }
 }
