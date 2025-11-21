@@ -1,34 +1,40 @@
 # LaserGuide v2 次回の作業項目
 
+## ✅ 完了した実装
+
+### ~~1. PassSegment自動生成の完成~~ ✅
+
+- ✅ linkOSPassSegments() - 対向セグメントの自動検出とペアリング
+- ✅ linkUserPassSegments() - ユーザーセグメントのペアリング
+- ✅ ビルドテスト成功
+- ✅ 実機で動作確認（2ディスプレイ環境）
+
+---
+
 ## 🔧 残っている実装
 
-### 1. PassSegment自動生成の完成
+### 1. エッジ越境の実装（Phase 5）
 
-現在`osPassSegments`が空配列のまま。以下を実装する必要あり：
+現在`EdgeCrossingDetector`は基本構造のみ。実際の越境処理を実装：
 
-#### linkOSPassSegments()
-- 対向するPassSegmentを検出
-- pairedSegmentIdを相互に設定
-- pairedSegment参照を設定
+#### CGEventによるマウス移動
+- マウスがエッジを超えたことを検出
+- CGEventでマウス座標を書き換え
+- 対向ディスプレイへワープ
 
-#### linkUserPassSegments()
-- osPassSegmentsからコピーしたuserPassSegments同士をペアリング
-- 新しいUUIDとの対応を正しく設定
+#### PP/PB/BP/BBパターン
+- Pass-Pass: 通常の越境
+- Pass-Block: 一方向のみ通過
+- Block-Pass: 逆方向のみ通過
+- Block-Block: 完全にブロック
 
-### 2. AppConfigurationの出力
+### 2. 設定の保存・読み込み
 
-デバッグ情報に`appConfiguration`セクションが含まれていない。
-- 現在は`configuration`と`system`のみ
-- `appConfiguration`も追加
-
-### 3. 保存・復元のテスト
-
-実際の動作確認：
-1. PassSegmentを手動設定
-2. 保存
-3. アプリ再起動
-4. 復元確認
-5. pairedSegmentキャッシュが正しく復元されるか
+現在、WorkspaceConfigurationは作成されるが保存されていない：
+- デフォルト作成時に自動保存
+- ディスプレイ変更時の保存
+- 物理座標の永続化
+- AppConfigurationとの統合
 
 ---
 
@@ -67,29 +73,32 @@
 
 ### 優先度: 高
 
-1. **PassSegment自動生成の完成**
-   - 論理的隣接検出
-   - 対向セグメントのペアリング
-   - テストデータでの動作確認
+1. **エッジ越境の実装**
+   - CGEventによる実際のマウス移動
+   - EdgeCrossingDetectorの完成
+   - PP/PB/BP/BBパターン実装
+   - 強制Block機能の統合
 
-2. **完全な保存・復元テスト**
-   - 手動でPassSegment設定
-   - UserDefaultsへの保存確認
-   - 復元後のキャッシュ確認
+2. **設定の保存・読み込み**
+   - WorkspaceConfiguration自動保存
+   - 物理座標の永続化
+   - 設定の復元と初期化
 
 ### 優先度: 中
 
-3. **AppConfiguration統合**
-   - デバッグ出力への追加
-   - workspace参照の動作確認
-
-4. **物理配置の初期値決定**
+3. **物理配置の初期値決定**
    - 論理配置から推測するアルゴリズム
+   - BFS アルゴリズム（v1からの移植）
 
-### 優先度: 低（UI実装後）
+4. **複数ディスプレイ構成テスト**
+   - 3台以上のディスプレイ
+   - 異なるPPIの組み合わせ
+   - 回転したディスプレイ
+
+### 優先度: 低（Phase 6以降）
 
 5. **キャリブレーションUI**
-6. **エッジ越境の実際の動作**
+6. **最終調整とドキュメント**
 
 ---
 
