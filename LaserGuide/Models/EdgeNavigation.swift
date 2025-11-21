@@ -34,7 +34,7 @@ struct SegmentRange: Codable, Hashable {
 /// Pass可能なセグメント
 struct PassSegment: Identifiable, Codable, Hashable {
     let id: UUID
-    let displayId: UUID  // このSegmentが属するDisplay（検索用）
+    let displayId: UUID  // このSegmentが属するDisplay（JSON保存必須）
     let side: EdgeSide
     
     // 論理座標での範囲（px単位、実座標値）
@@ -43,13 +43,35 @@ struct PassSegment: Identifiable, Codable, Hashable {
     // 物理座標での範囲（mm単位、実座標値）
     let physical: SegmentRange
     
-    // ペアリング（アプリロジックで使用）
-    let pairedSegmentId: UUID
+    // ペアリング（読み取り専用、setter内で自動更新、JSON保存）
+    private(set) var pairedSegmentId: UUID
     
-    // デバッグ用ヒント（JSONの可読性向上、アプリロジックでは使用しない）
-    let pairedDisplayId: UUID?
-    let pairedDisplayName: String?
-    let pairedSide: EdgeSide?
+    // デバッグ用ヒント（読み取り専用、setter内で自動更新、JSON保存）
+    private(set) var pairedDisplayId: UUID?
+    private(set) var pairedDisplayName: String?
+    private(set) var pairedSide: EdgeSide?
+    
+    // 実行時キャッシュ（private → JSON保存から除外）
+    private var _display: Display?
+    private var _pairedSegment: PassSegment?
+    
+    var display: Display? {
+        get { _display }
+        set { _display = newValue }
+    }
+    
+    var pairedSegment: PassSegment? {
+        get { _pairedSegment }
+        set {
+            _pairedSegment = newValue
+            if let paired = newValue, let display = paired._display {
+                self.pairedSegmentId = paired.id
+                self.pairedDisplayId = display.id
+                self.pairedDisplayName = display.display.name
+                self.pairedSide = paired.side
+            }
+        }
+    }
     
     init(
         id: UUID = UUID(),
@@ -57,10 +79,7 @@ struct PassSegment: Identifiable, Codable, Hashable {
         side: EdgeSide,
         logical: SegmentRange,
         physical: SegmentRange,
-        pairedSegmentId: UUID,
-        pairedDisplayId: UUID? = nil,
-        pairedDisplayName: String? = nil,
-        pairedSide: EdgeSide? = nil
+        pairedSegmentId: UUID = UUID()  // 仮のID、後で更新
     ) {
         self.id = id
         self.displayId = displayId
@@ -68,9 +87,6 @@ struct PassSegment: Identifiable, Codable, Hashable {
         self.logical = logical
         self.physical = physical
         self.pairedSegmentId = pairedSegmentId
-        self.pairedDisplayId = pairedDisplayId
-        self.pairedDisplayName = pairedDisplayName
-        self.pairedSide = pairedSide
     }
     
     /// バリデーション

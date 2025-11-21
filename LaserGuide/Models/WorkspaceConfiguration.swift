@@ -91,6 +91,68 @@ struct WorkspaceConfiguration: Codable {
         
         return true
     }
+    
+    /// 読み込み後の初期化（Display参照とペアリングを設定）
+    mutating func initialize() {
+        // Display参照を設定
+        for i in 0..<displays.count {
+            let display = displays[i]
+            
+            for j in 0..<displays[i].passSegments.count {
+                displays[i].passSegments[j].display = display
+            }
+            
+            for j in 0..<displays[i].osPassSegments.count {
+                displays[i].osPassSegments[j].display = display
+            }
+        }
+        
+        // ペアリングを設定
+        linkPairedSegments()
+    }
+    
+    /// 全PassSegmentのペアリングを設定
+    private mutating func linkPairedSegments() {
+        // 全Segmentをインデックス化
+        var segmentMap: [UUID: (displayIndex: Int, segmentIndex: Int, isOS: Bool)] = [:]
+        
+        for (i, display) in displays.enumerated() {
+            for (j, segment) in display.passSegments.enumerated() {
+                segmentMap[segment.id] = (i, j, false)
+            }
+            for (j, segment) in display.osPassSegments.enumerated() {
+                segmentMap[segment.id] = (i, j, true)
+            }
+        }
+        
+        // ペアを設定（userPassSegments）
+        for i in 0..<displays.count {
+            for j in 0..<displays[i].passSegments.count {
+                let pairedId = displays[i].passSegments[j].pairedSegmentId
+                if let (di, si, isOS) = segmentMap[pairedId] {
+                    if isOS {
+                        displays[i].passSegments[j].pairedSegment = displays[di].osPassSegments[si]
+                    } else {
+                        displays[i].passSegments[j].pairedSegment = displays[di].passSegments[si]
+                    }
+                }
+            }
+        }
+        
+        // ペアを設定（osPassSegments）
+        for i in 0..<displays.count {
+            for j in 0..<displays[i].osPassSegments.count {
+                let pairedId = displays[i].osPassSegments[j].pairedSegmentId
+                if let (di, si, isOS) = segmentMap[pairedId] {
+                    if isOS {
+                        displays[i].osPassSegments[j].pairedSegment = displays[di].osPassSegments[si]
+                    } else {
+                        displays[i].osPassSegments[j].pairedSegment = displays[di].passSegments[si]
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 実行時のワークスペース（Workspace型は不要、WorkspaceConfigurationがそのまま使える）

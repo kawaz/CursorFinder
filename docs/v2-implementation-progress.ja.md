@@ -41,7 +41,7 @@
   - `ConfigMetadata` - アプリバージョン、Git情報
   - 物理座標の正規化
   - デフォルト生成
-  
+
 - ✅ `AppSettings.swift`
   - `AppConfiguration` - グローバル設定
   - `LaserSettings` - レーザー機能設定

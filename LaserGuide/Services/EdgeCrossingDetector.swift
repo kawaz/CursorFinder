@@ -4,12 +4,12 @@ import Cocoa
 /// エッジ越境検出サービス
 class EdgeCrossingDetector {
     static let shared = EdgeCrossingDetector()
-    
+
     private let displayDetector = DisplayDetector.shared
     private let mouseTracker = MouseTracker.shared
-    
+
     private init() {}
-    
+
     /// エッジ付近かチェック
     /// - Parameters:
     ///   - position: マウス位置（グローバル座標）
@@ -19,9 +19,9 @@ class EdgeCrossingDetector {
         at position: CGPoint,
         threshold: CGFloat = 5.0
     ) -> (displayId: UUID, side: EdgeSide, normalizedPosition: Double)? {
-        
+
         let workspace = displayDetector.workspace
-        
+
         // マウスがどのディスプレイにいるか判定
         guard let currentDisplay = workspace.displays.first(where: {
             let frame = $0.coordinates.logical
@@ -30,11 +30,11 @@ class EdgeCrossingDetector {
         }) else {
             return nil
         }
-        
+
         let frame = currentDisplay.coordinates.logical
         let relativeX = position.x - frame.position.x
         let relativeY = position.y - frame.position.y
-        
+
         // 各エッジとの距離をチェック（実座標値を返す）
         if relativeY <= threshold {
             // Bottom edge
@@ -49,10 +49,10 @@ class EdgeCrossingDetector {
             // Right edge
             return (currentDisplay.id, .right, relativeY)
         }
-        
+
         return nil
     }
-    
+
     /// 越境を処理
     /// - Parameters:
     ///   - displayId: 現在のディスプレイID
@@ -64,16 +64,16 @@ class EdgeCrossingDetector {
         side: EdgeSide,
         position: Double
     ) -> (targetDisplay: Display, targetPosition: CGPoint)? {
-        
+
         // 強制Block状態のチェック
         if mouseTracker.shouldForceBlock {
             NSLog("🚫 強制Block（修飾キー押下中）")
             return nil
         }
-        
+
         let workspace = displayDetector.workspace
         let navigationMap = EdgeNavigationMap(displays: workspace.displays)
-        
+
         // EdgeNavigationMapで越境処理
         guard let (targetDisplay, targetPosition) = navigationMap.handleCrossing(
             at: position,
@@ -83,17 +83,16 @@ class EdgeCrossingDetector {
             NSLog("🚫 Block: displayId=\(displayId), side=\(side), pos=\(String(format: "%.1f", position))")
             return nil
         }
-        
+
         // 論理座標に変換
         let targetFrame = targetDisplay.coordinates.logical
         let targetPoint = CGPoint(
             x: targetFrame.position.x + targetPosition,
             y: targetFrame.position.y
         )
-        
+
         NSLog("✅ 越境成功: pos=\(String(format: "%.1f", targetPosition))")
-        
+
         return (targetDisplay, targetPoint)
     }
 }
-

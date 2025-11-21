@@ -58,17 +58,30 @@ struct ModifierKeySet: Codable, Hashable {
 
 /// アプリ設定（グローバル）
 struct AppConfiguration: Codable {
-    var currentWorkspaceKey: String
+    var workspaceKey: String
     
     // 機能設定
-    var laser: LaserSettings
-    var edgeNavigation: EdgeNavigationSettings
+    var laser: LaserConfiguration
+    var edgeNavigation: EdgeNavigationConfiguration
     
     // その他
     var autoLaunchEnabled: Bool = false
     
+    // 実行時キャッシュ（private → JSON保存から除外）
+    private var _workspace: WorkspaceConfiguration?
+    
+    var workspace: WorkspaceConfiguration? {
+        get { _workspace }
+        set {
+            _workspace = newValue
+            if let ws = newValue {
+                self.workspaceKey = ws.configurationKey
+            }
+        }
+    }
+    
     /// レーザー表示機能の設定
-    struct LaserSettings: Codable {
+    struct LaserConfiguration: Codable {
         var enabled: Bool = true
         
         // 外観
@@ -86,7 +99,7 @@ struct AppConfiguration: Codable {
     }
     
     /// エッジナビゲーション機能の設定
-    struct EdgeNavigationSettings: Codable {
+    struct EdgeNavigationConfiguration: Codable {
         var enabled: Bool = true
         
         // 強制Block
@@ -95,12 +108,12 @@ struct AppConfiguration: Codable {
     }
     
     init(
-        currentWorkspaceKey: String,
-        laser: LaserSettings = LaserSettings(),
-        edgeNavigation: EdgeNavigationSettings = EdgeNavigationSettings(),
+        workspaceKey: String,
+        laser: LaserConfiguration = LaserConfiguration(),
+        edgeNavigation: EdgeNavigationConfiguration = EdgeNavigationConfiguration(),
         autoLaunchEnabled: Bool = false
     ) {
-        self.currentWorkspaceKey = currentWorkspaceKey
+        self.workspaceKey = workspaceKey
         self.laser = laser
         self.edgeNavigation = edgeNavigation
         self.autoLaunchEnabled = autoLaunchEnabled
@@ -148,6 +161,6 @@ class AppConfigurationManager {
     
     /// デフォルト設定を取得
     func getDefaultConfiguration(workspaceKey: String) -> AppConfiguration {
-        AppConfiguration(currentWorkspaceKey: workspaceKey)
+        AppConfiguration(workspaceKey: workspaceKey)
     }
 }
