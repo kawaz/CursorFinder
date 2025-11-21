@@ -20,7 +20,20 @@ struct HardwareIdentifier: Codable, Hashable {
     }
 
     var stringRepresentation: String {
-        "\(vendorID)-\(modelID)-\(serialNumber)"
+        // 16進数、8桁固定
+        String(format: "%08X%08X%08X", vendorID, modelID, serialNumber)
+    }
+    
+    var vendorIDHex: String {
+        String(format: "%08X", vendorID)
+    }
+    
+    var modelIDHex: String {
+        String(format: "%08X", modelID)
+    }
+    
+    var serialNumberHex: String {
+        String(format: "%08X", serialNumber)
     }
 }
 
@@ -47,10 +60,24 @@ struct DisplayFingerprint: Codable, Hashable {
 
     /// 文字列表現（設定キー生成用）
     var stringRepresentation: String {
-        let hw = hardwareId.stringRepresentation
+        // ハードウェアID（24文字固定、16進数、ハイフンなし）
+        let hw = String(format: "%08X%08X%08X", 
+                       hardwareId.vendorID, 
+                       hardwareId.modelID, 
+                       hardwareId.serialNumber)
+        
+        // 解像度
         let res = "\(Int(resolution.width))x\(Int(resolution.height))"
-        let scale = backingScaleFactor != 1.0 ? "@\(Int(backingScaleFactor))x" : ""
-        return "\(hw)_\(res)\(scale)"
+        
+        // スケール（x統一形式、浮動小数点対応）
+        let scale: String
+        if backingScaleFactor.truncatingRemainder(dividingBy: 1) == 0 {
+            scale = "x\(Int(backingScaleFactor))"
+        } else {
+            scale = "x\(backingScaleFactor)"
+        }
+        
+        return "\(hw)-\(res)\(scale)"
     }
 }
 
@@ -59,6 +86,6 @@ func generateConfigurationKey(fingerprints: [DisplayFingerprint]) -> String {
     let sorted = fingerprints
         .map { $0.stringRepresentation }
         .sorted()
-        .joined(separator: "+")
+        .joined(separator: "_")  // アンダーバーで連結（URL/ファイル名安全）
     return "config_\(sorted)"
 }

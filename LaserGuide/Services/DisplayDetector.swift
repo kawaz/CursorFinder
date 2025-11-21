@@ -6,14 +6,14 @@ import Combine
 class DisplayDetector: ObservableObject {
     static let shared = DisplayDetector()
     
-    @Published private(set) var workspace: Workspace
+    @Published private(set) var workspace: WorkspaceConfiguration
     
     private let configurationManager = ConfigurationManager.shared
     private var displayChangeObserver: Any?
     
     private init() {
         // 初期ワークスペースを読み込み
-        self.workspace = configurationManager.loadWorkspace()
+        self.workspace = configurationManager.loadOrCreateWorkspace()
         
         NSLog("🖥️ DisplayDetector initialized with \(workspace.displays.count) displays")
     }
@@ -50,7 +50,7 @@ class DisplayDetector: ObservableObject {
         NSLog("🔄 Display configuration changed")
         
         // ワークスペースを再読み込み
-        workspace = configurationManager.loadWorkspace()
+        workspace = configurationManager.loadOrCreateWorkspace()
         
         NSLog("✅ Workspace reloaded with \(workspace.displays.count) displays")
         

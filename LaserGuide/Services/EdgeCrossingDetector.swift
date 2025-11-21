@@ -24,32 +24,30 @@ class EdgeCrossingDetector {
         
         // マウスがどのディスプレイにいるか判定
         guard let currentDisplay = workspace.displays.first(where: {
-            $0.logicalFrame.contains(position)
+            let frame = $0.coordinates.logical
+            return position.x >= frame.position.x && position.x < frame.position.x + frame.size.width &&
+                   position.y >= frame.position.y && position.y < frame.position.y + frame.size.height
         }) else {
             return nil
         }
         
-        let frame = currentDisplay.logicalFrame
-        let relativeX = position.x - frame.minX
-        let relativeY = position.y - frame.minY
+        let frame = currentDisplay.coordinates.logical
+        let relativeX = position.x - frame.position.x
+        let relativeY = position.y - frame.position.y
         
-        // 各エッジとの距離をチェック
+        // 各エッジとの距離をチェック（実座標値を返す）
         if relativeY <= threshold {
             // Bottom edge
-            let normalizedPos = relativeX / frame.width
-            return (currentDisplay.id, .bottom, normalizedPos)
-        } else if relativeY >= frame.height - threshold {
+            return (currentDisplay.id, .bottom, relativeX)
+        } else if relativeY >= frame.size.height - threshold {
             // Top edge
-            let normalizedPos = relativeX / frame.width
-            return (currentDisplay.id, .top, normalizedPos)
+            return (currentDisplay.id, .top, relativeX)
         } else if relativeX <= threshold {
             // Left edge
-            let normalizedPos = relativeY / frame.height
-            return (currentDisplay.id, .left, normalizedPos)
-        } else if relativeX >= frame.width - threshold {
+            return (currentDisplay.id, .left, relativeY)
+        } else if relativeX >= frame.size.width - threshold {
             // Right edge
-            let normalizedPos = relativeY / frame.height
-            return (currentDisplay.id, .right, normalizedPos)
+            return (currentDisplay.id, .right, relativeY)
         }
         
         return nil
@@ -74,60 +72,28 @@ class EdgeCrossingDetector {
         }
         
         let workspace = displayDetector.workspace
-        let navigation = workspace.configuration.navigation
+        let navigationMap = EdgeNavigationMap(displays: workspace.displays)
         
         // EdgeNavigationMapで越境処理
-        guard let (targetEdge, targetNormalizedPos) = navigation.handleCrossing(
+        guard let (targetDisplay, targetPosition) = navigationMap.handleCrossing(
             at: position,
             displayId: displayId,
             side: side
         ) else {
-            NSLog("🚫 Block: displayId=\(displayId), side=\(side), pos=\(String(format: "%.3f", position))")
+            NSLog("🚫 Block: displayId=\(displayId), side=\(side), pos=\(String(format: "%.1f", position))")
             return nil
         }
         
-        // 越境先のディスプレイを取得
-        guard let targetDisplay = workspace.displays.first(where: {
-            $0.id == targetEdge.displayId
-        }) else {
-            NSLog("❌ 越境先ディスプレイが見つかりません: \(targetEdge.displayId)")
-            return nil
-        }
+        // 論理座標に変換
+        let targetFrame = targetDisplay.coordinates.logical
+        let targetPoint = CGPoint(
+            x: targetFrame.position.x + targetPosition,
+            y: targetFrame.position.y
+        )
         
-        // 越境先の座標を計算
-        let targetFrame = targetDisplay.logicalFrame
-        let targetPosition: CGPoint
+        NSLog("✅ 越境成功: pos=\(String(format: "%.1f", targetPosition))")
         
-        switch targetEdge.side {
-        case .top:
-            // Top edge: X軸で位置を決定
-            targetPosition = CGPoint(
-                x: targetFrame.minX + targetNormalizedPos * targetFrame.width,
-                y: targetFrame.maxY
-            )
-        case .bottom:
-            // Bottom edge: X軸で位置を決定
-            targetPosition = CGPoint(
-                x: targetFrame.minX + targetNormalizedPos * targetFrame.width,
-                y: targetFrame.minY
-            )
-        case .left:
-            // Left edge: Y軸で位置を決定
-            targetPosition = CGPoint(
-                x: targetFrame.minX,
-                y: targetFrame.minY + targetNormalizedPos * targetFrame.height
-            )
-        case .right:
-            // Right edge: Y軸で位置を決定
-            targetPosition = CGPoint(
-                x: targetFrame.maxX,
-                y: targetFrame.minY + targetNormalizedPos * targetFrame.height
-            )
-        }
-        
-        NSLog("✅ 越境: \(side) -> \(targetEdge.side), pos=\(String(format: "%.3f", targetNormalizedPos))")
-        
-        return (targetDisplay, targetPosition)
+        return (targetDisplay, targetPoint)
     }
 }
 

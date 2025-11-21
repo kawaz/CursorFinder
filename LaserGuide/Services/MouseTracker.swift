@@ -13,13 +13,8 @@ class MouseTracker: ObservableObject {
     private var mouseMovedMonitor: Any?
     private var flagsChangedMonitor: Any?
     private var inactivityTimer: Timer?
-    private let settings: AppSettings
-    
-    private let inactivityThreshold: TimeInterval
     
     private init() {
-        self.settings = AppSettingsManager.shared.loadSettings()
-        self.inactivityThreshold = settings.inactivityThreshold
     }
     
     /// 追跡を開始
@@ -79,15 +74,26 @@ class MouseTracker: ObservableObject {
     
     /// 強制Block状態かチェック
     var shouldForceBlock: Bool {
-        guard settings.forceBlockEnabled else { return false }
-        return settings.forceBlockModifiers.matches(currentModifiers)
+        guard let appConfig = AppConfigurationManager.shared.loadConfiguration() else {
+            return false
+        }
+        guard appConfig.edgeNavigation.forceBlockEnabled else { return false }
+        return appConfig.edgeNavigation.forceBlockModifiers.matches(currentModifiers)
     }
     
     /// 非アクティブタイマーをリセット
     private func resetInactivityTimer() {
         inactivityTimer?.invalidate()
         
-        inactivityTimer = Timer.scheduledTimer(withTimeInterval: inactivityThreshold, repeats: false) { [weak self] _ in
+        // AppConfigurationから閾値を取得
+        let threshold: TimeInterval
+        if let appConfig = AppConfigurationManager.shared.loadConfiguration() {
+            threshold = appConfig.laser.inactivityThreshold
+        } else {
+            threshold = 0.3  // デフォルト
+        }
+        
+        inactivityTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             self.isMouseActive = false
             NSLog("💤 Mouse inactive")

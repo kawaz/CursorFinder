@@ -85,7 +85,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func createLaserWindow(for display: Display) -> NSWindow {
-        let frame = display.logicalFrame
+        let logicalFrame = display.coordinates.logical
+        let frame = CGRect(
+            x: logicalFrame.position.x,
+            y: logicalFrame.position.y,
+            width: logicalFrame.size.width,
+            height: logicalFrame.size.height
+        )
+        
+        // 対応するNSScreenを検索
+        let screen = NSScreen.screens.first(where: {
+            let fingerprint = DisplayFingerprint(screen: $0)
+            return fingerprint.stringRepresentation == display.hardware.fingerprint
+        }) ?? NSScreen.main
         
         // フルスクリーンの透明ウィンドウ
         let window = NSWindow(
@@ -93,7 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             styleMask: [.borderless],
             backing: .buffered,
             defer: false,
-            screen: display.screen
+            screen: screen
         )
         
         window.isOpaque = false

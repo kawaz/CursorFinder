@@ -56,52 +56,98 @@ struct ModifierKeySet: Codable, Hashable {
     }
 }
 
-/// アプリ設定
-struct AppSettings: Codable {
-    var forceBlockModifiers: ModifierKeySet = .option
-    var forceBlockEnabled: Bool = true
+/// アプリ設定（グローバル）
+struct AppConfiguration: Codable {
+    var currentWorkspaceKey: String
     
-    // 将来の拡張用
-    var laserColor: String = "blue"
-    var laserWidth: Double = 8.0
-    var inactivityThreshold: Double = 0.3
+    // 機能設定
+    var laser: LaserSettings
+    var edgeNavigation: EdgeNavigationSettings
     
-    private enum CodingKeys: String, CodingKey {
-        case forceBlockModifiers
-        case forceBlockEnabled
-        case laserColor
-        case laserWidth
-        case inactivityThreshold
+    // その他
+    var autoLaunchEnabled: Bool = false
+    
+    /// レーザー表示機能の設定
+    struct LaserSettings: Codable {
+        var enabled: Bool = true
+        
+        // 外観
+        var color: LaserColor = .blue
+        var width: Double = 8.0
+        var opacity: Double = 0.3
+        
+        // 動作
+        var inactivityThreshold: Double = 0.3  // 秒
+        var showOnAllDisplays: Bool = true
+        
+        enum LaserColor: String, Codable {
+            case blue, red, green, purple, cyan, custom
+        }
+    }
+    
+    /// エッジナビゲーション機能の設定
+    struct EdgeNavigationSettings: Codable {
+        var enabled: Bool = true
+        
+        // 強制Block
+        var forceBlockEnabled: Bool = true
+        var forceBlockModifiers: ModifierKeySet = .option
+    }
+    
+    init(
+        currentWorkspaceKey: String,
+        laser: LaserSettings = LaserSettings(),
+        edgeNavigation: EdgeNavigationSettings = EdgeNavigationSettings(),
+        autoLaunchEnabled: Bool = false
+    ) {
+        self.currentWorkspaceKey = currentWorkspaceKey
+        self.laser = laser
+        self.edgeNavigation = edgeNavigation
+        self.autoLaunchEnabled = autoLaunchEnabled
     }
 }
 
 /// アプリ設定マネージャー
-class AppSettingsManager {
-    static let shared = AppSettingsManager()
+class AppConfigurationManager {
+    static let shared = AppConfigurationManager()
     
     private let userDefaults = UserDefaults.standard
-    private let settingsKey = "LaserGuide.v2.AppSettings"
+    private let settingsKey = "LaserGuide.v2.AppConfiguration"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     
-    private init() {}
+    private init() {
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        decoder.dateDecodingStrategy = .iso8601
+    }
     
     /// 設定を読み込み
-    func loadSettings() -> AppSettings {
-        guard let data = userDefaults.data(forKey: settingsKey),
-              let settings = try? decoder.decode(AppSettings.self, from: data) else {
-            return AppSettings()  // デフォルト
+    func loadConfiguration() -> AppConfiguration? {
+        guard let data = userDefaults.data(forKey: settingsKey) else {
+            return nil
         }
-        return settings
+        
+        do {
+            return try decoder.decode(AppConfiguration.self, from: data)
+        } catch {
+            NSLog("❌ AppConfiguration の読み込みに失敗: \(error)")
+            return nil
+        }
     }
     
     /// 設定を保存
-    func saveSettings(_ settings: AppSettings) {
-        guard let data = try? encoder.encode(settings) else {
-            NSLog("❌ 設定の保存に失敗")
-            return
+    func saveConfiguration(_ config: AppConfiguration) {
+        do {
+            let data = try encoder.encode(config)
+            userDefaults.set(data, forKey: settingsKey)
+        } catch {
+            NSLog("❌ AppConfiguration の保存に失敗: \(error)")
         }
-        userDefaults.set(data, forKey: settingsKey)
+    }
+    
+    /// デフォルト設定を取得
+    func getDefaultConfiguration(workspaceKey: String) -> AppConfiguration {
+        AppConfiguration(currentWorkspaceKey: workspaceKey)
     }
 }
-

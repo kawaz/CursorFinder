@@ -64,7 +64,11 @@ class LaserScene: SKScene {
         let mouseLocation = mouseTracker.currentMouseLocation
         
         // マウスがこのディスプレイ上にあるかチェック
-        let isOnThisDisplay = display.logicalFrame.contains(mouseLocation)
+        let frame = display.coordinates.logical
+        let isOnThisDisplay = mouseLocation.x >= frame.position.x && 
+                             mouseLocation.x < frame.position.x + frame.size.width &&
+                             mouseLocation.y >= frame.position.y && 
+                             mouseLocation.y < frame.position.y + frame.size.height
         
         if isOnThisDisplay {
             // このディスプレイ上にマウスがある場合、レーザーを表示
@@ -77,16 +81,17 @@ class LaserScene: SKScene {
     
     private func updateLasers(mouseLocation: CGPoint) {
         // ローカル座標に変換（SpriteKitは左下原点なので論理座標と同じ）
-        let localX = mouseLocation.x - display.logicalFrame.minX
-        let localY = mouseLocation.y - display.logicalFrame.minY
+        let frame = display.coordinates.logical
+        let localX = mouseLocation.x - frame.position.x
+        let localY = mouseLocation.y - frame.position.y
         let targetPoint = CGPoint(x: localX, y: localY)
         
         // 4つのコーナー
         let corners = [
-            CGPoint(x: 0, y: 0),                                    // 左下
-            CGPoint(x: display.logicalFrame.width, y: 0),          // 右下
-            CGPoint(x: 0, y: display.logicalFrame.height),         // 左上
-            CGPoint(x: display.logicalFrame.width, y: display.logicalFrame.height)  // 右上
+            CGPoint(x: 0, y: 0),                          // 左下
+            CGPoint(x: frame.size.width, y: 0),          // 右下
+            CGPoint(x: 0, y: frame.size.height),         // 左上
+            CGPoint(x: frame.size.width, y: frame.size.height)  // 右上
         ]
         
         // 各コーナーからレーザーを描画
