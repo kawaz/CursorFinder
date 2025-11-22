@@ -5,6 +5,7 @@ import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var laserWindowControllers: [NSWindowController] = []
+    private var calibrationWindowController: NSWindowController?
 
     private let displayDetector = DisplayDetector.shared
     private let mouseTracker = MouseTracker.shared
@@ -64,6 +65,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         menu.addItem(NSMenuItem(title: "LaserGuide v2", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "物理配置キャリブレーション...", action: #selector(openCalibration), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "デバッグ情報をコピー", action: #selector(copyDebugInfo), keyEquivalent: "d"))
         menu.addItem(NSMenuItem(title: "設定をリロード", action: #selector(reloadConfiguration), keyEquivalent: "r"))
@@ -142,5 +145,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         displayDetector.reloadWorkspace()
         setupLaserWindows()
         NSLog("🔄 設定をリロードしました")
+    }
+
+    @objc private func openCalibration() {
+        // 既存のウィンドウがあれば前面に
+        if let existingWindow = calibrationWindowController?.window, existingWindow.isVisible {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        // 新しいウィンドウを作成
+        let calibrationView = PhysicalLayoutView()
+        let hostingController = NSHostingController(rootView: calibrationView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        window.title = "物理配置キャリブレーション"
+        window.contentViewController = hostingController
+        window.center()
+
+        calibrationWindowController = NSWindowController(window: window)
+        calibrationWindowController?.showWindow(nil)
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSLog("📐 キャリブレーションウィンドウを開きました")
     }
 }
