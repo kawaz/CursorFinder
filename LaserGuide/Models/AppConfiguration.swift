@@ -1,4 +1,4 @@
-// AppSettings.swift
+// AppConfiguration.swift
 import Cocoa
 
 /// 修飾キーセット（組み合わせ可能）

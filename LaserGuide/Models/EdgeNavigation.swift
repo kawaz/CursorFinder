@@ -32,59 +32,13 @@ struct SegmentRange: Codable {
 }
 
 /// Pass可能なセグメント
-class PassSegment: Identifiable, Codable {
+struct PassSegment: Identifiable, Codable {
     let id: UUID
-    let displayId: UUID  // このSegmentが属するDisplay（JSON保存必須）
+    let displayId: UUID
+    let pairedSegmentId: UUID
     let side: EdgeSide
-
-    // 論理座標での範囲（px単位、実座標値）
     let logical: SegmentRange
-
-    // 物理座標での範囲（mm単位、実座標値）
     let physical: SegmentRange
-
-    // ペアリング（読み取り専用、setter内で自動更新、JSON保存）
-    private(set) var pairedSegmentId: UUID
-
-    // デバッグ用ヒント（読み取り専用、setter内で自動更新、JSON保存）
-    private(set) var pairedDisplayId: UUID?
-    private(set) var pairedDisplayName: String?
-    private(set) var pairedSide: EdgeSide?
-
-    // 実行時キャッシュ（private → JSON保存から除外）
-    private var _display: Display?
-    private weak var _pairedSegment: PassSegment?
-
-    var display: Display? {
-        get { _display }
-        set { _display = newValue }
-    }
-
-    var pairedSegment: PassSegment? {
-        get { _pairedSegment }
-        set {
-            _pairedSegment = newValue
-            if let paired = newValue, let display = paired._display {
-                self.pairedSegmentId = paired.id
-                self.pairedDisplayId = display.id
-                self.pairedDisplayName = display.display.name
-                self.pairedSide = paired.side
-            }
-        }
-    }
-    
-    // Codable: エンコード対象を明示的に指定
-    enum CodingKeys: String, CodingKey {
-        case id
-        case displayId
-        case side
-        case logical
-        case physical
-        case pairedSegmentId
-        case pairedDisplayId
-        case pairedDisplayName
-        case pairedSide
-    }
 
     init(
         id: UUID = UUID(),
@@ -92,28 +46,24 @@ class PassSegment: Identifiable, Codable {
         side: EdgeSide,
         logical: SegmentRange,
         physical: SegmentRange,
-        pairedSegmentId: UUID = UUID()  // 仮のID、後で更新
+        pairedSegmentId: UUID
     ) {
         self.id = id
         self.displayId = displayId
+        self.pairedSegmentId = pairedSegmentId
         self.side = side
         self.logical = logical
         self.physical = physical
-        self.pairedSegmentId = pairedSegmentId
     }
 
     /// バリデーション
     func validate() -> Bool {
-        return logical.validate() && physical.validate()
+        logical.validate() && physical.validate()
     }
 
     /// 越境先の位置を計算
-    /// - Parameter position: 現在の位置（実座標値）
-    /// - Returns: ペア側の位置（実座標値）、またはnil
     func calculateTargetPosition(_ position: Double, pairedSegment: PassSegment) -> Double? {
-        guard logical.contains(position) else {
-            return nil
-        }
+        guard logical.contains(position) else { return nil }
 
         if pairedSegment.logical.isEmpty {
             // 空セグメント → ワープ

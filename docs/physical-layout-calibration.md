@@ -251,5 +251,5 @@ Potential improvements to the calibration system:
 
 ## See Also
 
-- [Multi-Display PPI Correction](multi-display-ppi-correction.md) - Original problem description
 - [Smart Edge Navigation](smart-edge-navigation.md) - Feature that uses calibration data
+- [v2 Data Model Design](v2-data-model-design.ja.md) - Unified coordinate system and PassSegment pairing

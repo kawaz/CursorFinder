@@ -251,5 +251,5 @@ if manager.hasCalibration() {
 
 ## 関連項目
 
-- [マルチディスプレイPPI補正](multi-display-ppi-correction.ja.md) - 元の問題の説明
 - [スマートエッジナビゲーション](smart-edge-navigation.ja.md) - キャリブレーションデータを使用する機能
+- [v2データモデル設計](v2-data-model-design.ja.md) - 座標系統一とPassSegmentペアリング

@@ -115,4 +115,3 @@
 - Git情報がnull
   - Info.plistへの埋め込みが未設定
   - Makefileで対応必要
-

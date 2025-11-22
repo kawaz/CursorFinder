@@ -63,11 +63,7 @@ class ConfigurationManager {
         }
 
         do {
-            var config = try decoder.decode(WorkspaceConfiguration.self, from: data)
-
-            // 読み込み後の初期化（Display参照とペアリング設定）
-            config.initialize()
-
+            let config = try decoder.decode(WorkspaceConfiguration.self, from: data)
             return config
         } catch {
             NSLog("❌ Workspace設定の読み込みに失敗: \(error)")
@@ -158,7 +154,7 @@ class ConfigurationManager {
 
         var merged = config
         merged.displays = updatedDisplays
-        merged.initialize()  // 初期化
+        merged.invalidateMaps()  // Mapをリセット
         return merged
     }
 

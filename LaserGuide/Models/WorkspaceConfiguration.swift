@@ -9,6 +9,67 @@ struct WorkspaceConfiguration: Codable {
     var displays: [Display]
     var metadata: ConfigMetadata
 
+    // Runtime用Map（JSON除外）
+    private var _displayMap: [UUID: Display]?
+    private var _segmentMap: [UUID: PassSegment]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, configurationKey, displays, metadata
+    }
+
+    // MARK: - Runtime Accessors
+
+    /// DisplayをIDで取得
+    subscript(displayId: UUID) -> Display? {
+        mutating get {
+            if _displayMap == nil { buildMaps() }
+            return _displayMap?[displayId]
+        }
+    }
+
+    /// PassSegmentをIDで取得
+    subscript(segmentId: UUID) -> PassSegment? {
+        mutating get {
+            if _segmentMap == nil { buildMaps() }
+            return _segmentMap?[segmentId]
+        }
+    }
+
+    /// PassSegmentのペアを取得
+    mutating func pairedSegment(of segment: PassSegment) -> PassSegment? {
+        self[segment.pairedSegmentId]
+    }
+
+    /// PassSegmentが属するDisplayを取得
+    mutating func display(of segment: PassSegment) -> Display? {
+        self[segment.displayId]
+    }
+
+    /// Runtime Mapを構築
+    private mutating func buildMaps() {
+        var displayMap: [UUID: Display] = [:]
+        var segmentMap: [UUID: PassSegment] = [:]
+
+        for display in displays {
+            displayMap[display.id] = display
+            for segment in display.passSegments {
+                segmentMap[segment.id] = segment
+            }
+            for segment in display.osPassSegments {
+                segmentMap[segment.id] = segment
+            }
+        }
+
+        _displayMap = displayMap
+        _segmentMap = segmentMap
+    }
+
+    /// Mapをクリア（displays変更後に呼ぶ）
+    mutating func invalidateMaps() {
+        _displayMap = nil
+        _segmentMap = nil
+    }
+
     struct ConfigMetadata: Codable {
         let created: Date
         var modified: Date
@@ -92,67 +153,6 @@ struct WorkspaceConfiguration: Codable {
         return true
     }
 
-    /// 読み込み後の初期化（Display参照とペアリングを設定）
-    mutating func initialize() {
-        // Display参照を設定
-        for i in 0..<displays.count {
-            let display = displays[i]
-
-            for j in 0..<displays[i].passSegments.count {
-                displays[i].passSegments[j].display = display
-            }
-
-            for j in 0..<displays[i].osPassSegments.count {
-                displays[i].osPassSegments[j].display = display
-            }
-        }
-
-        // ペアリングを設定
-        linkPairedSegments()
-    }
-
-    /// 全PassSegmentのペアリングを設定
-    private mutating func linkPairedSegments() {
-        // 全Segmentをインデックス化
-        var segmentMap: [UUID: (displayIndex: Int, segmentIndex: Int, isOS: Bool)] = [:]
-
-        for (i, display) in displays.enumerated() {
-            for (j, segment) in display.passSegments.enumerated() {
-                segmentMap[segment.id] = (i, j, false)
-            }
-            for (j, segment) in display.osPassSegments.enumerated() {
-                segmentMap[segment.id] = (i, j, true)
-            }
-        }
-
-        // ペアを設定（userPassSegments）
-        for i in 0..<displays.count {
-            for j in 0..<displays[i].passSegments.count {
-                let pairedId = displays[i].passSegments[j].pairedSegmentId
-                if let (di, si, isOS) = segmentMap[pairedId] {
-                    if isOS {
-                        displays[i].passSegments[j].pairedSegment = displays[di].osPassSegments[si]
-                    } else {
-                        displays[i].passSegments[j].pairedSegment = displays[di].passSegments[si]
-                    }
-                }
-            }
-        }
-
-        // ペアを設定（osPassSegments）
-        for i in 0..<displays.count {
-            for j in 0..<displays[i].osPassSegments.count {
-                let pairedId = displays[i].osPassSegments[j].pairedSegmentId
-                if let (di, si, isOS) = segmentMap[pairedId] {
-                    if isOS {
-                        displays[i].osPassSegments[j].pairedSegment = displays[di].osPassSegments[si]
-                    } else {
-                        displays[i].osPassSegments[j].pairedSegment = displays[di].passSegments[si]
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// 実行時のワークスペース（Workspace型は不要、WorkspaceConfigurationがそのまま使える）
@@ -171,40 +171,30 @@ extension WorkspaceConfiguration {
             displays[i].coordinates.physical.position.y -= minY
         }
 
-        // OS標準のPassSegmentを生成（論理的隣接を検出）
-        generateOSPassSegments(displays: &displays)
+        // OS標準のPassSegmentを生成（論理的隣接を検出 + ペアリング）
+        generateAndLinkOSPassSegments(displays: &displays)
 
-        // Display参照を設定
-        for i in 0..<displays.count {
-            let display = displays[i]
-            for j in 0..<displays[i].osPassSegments.count {
-                displays[i].osPassSegments[j].display = display
+        // ユーザーPassSegmentはOS標準をコピー（初期状態）
+        // osPassSegments間のペアIDマッピングを作成
+        var osToUserIdMap: [UUID: UUID] = [:]
+        for display in displays {
+            for seg in display.osPassSegments {
+                osToUserIdMap[seg.id] = UUID()
             }
         }
 
-        // ペアリングを設定
-        linkOSPassSegments(displays: &displays)
-
-        // ユーザーPassSegmentはOS標準をコピー（初期状態）
         for i in 0..<displays.count {
-            let display = displays[i]
-            // osPassSegmentsをディープコピー
             displays[i].passSegments = displays[i].osPassSegments.map { seg in
-                let newSeg = PassSegment(
-                    id: UUID(),
+                PassSegment(
+                    id: osToUserIdMap[seg.id]!,
                     displayId: seg.displayId,
                     side: seg.side,
                     logical: seg.logical,
                     physical: seg.physical,
-                    pairedSegmentId: seg.pairedSegmentId
+                    pairedSegmentId: osToUserIdMap[seg.pairedSegmentId]!
                 )
-                newSeg.display = display
-                return newSeg
             }
         }
-
-        // userPassSegmentsのペアリングも設定
-        linkUserPassSegments(displays: &displays)
 
         // 設定キーを生成
         let fingerprints = displays.map {
@@ -226,142 +216,30 @@ extension WorkspaceConfiguration {
         )
     }
 
-    /// OS標準のPassSegmentを生成（論理的に隣接している範囲）
-    private static func generateOSPassSegments(displays: inout [Display]) {
+    /// OS標準のPassSegmentを生成してペアリング
+    private static func generateAndLinkOSPassSegments(displays: inout [Display]) {
         let epsilon: CGFloat = 1.0
 
+        // 隣接情報を収集: (displayIndex, side, otherDisplayIndex, otherSide, overlap範囲)
+        struct AdjacencyInfo {
+            let displayIndex: Int
+            let side: EdgeSide
+            let otherDisplayIndex: Int
+            let otherSide: EdgeSide
+            let logicalRange: SegmentRange
+            let physicalRange: SegmentRange
+            var segmentId: UUID = UUID()
+            var pairedSegmentId: UUID?
+        }
+
+        var adjacencies: [AdjacencyInfo] = []
+
+        // 全ディスプレイペアの隣接を検出
         for i in 0..<displays.count {
             let display = displays[i]
-            var segments: [PassSegment] = []
+            let frame = display.coordinates.logical
 
-            // 各エッジについて隣接ディスプレイを検索
             for side in EdgeSide.allCases {
-                let adjacentSegments = findAdjacentSegments(
-                    display: display,
-                    side: side,
-                    allDisplays: displays,
-                    epsilon: epsilon
-                )
-
-                segments.append(contentsOf: adjacentSegments)
-            }
-
-            displays[i].osPassSegments = segments
-        }
-    }
-
-    /// 隣接するディスプレイを検出してPassSegmentを生成
-    private static func findAdjacentSegments(
-        display: Display,
-        side: EdgeSide,
-        allDisplays: [Display],
-        epsilon: CGFloat
-    ) -> [PassSegment] {
-        var segments: [PassSegment] = []
-        let frame = display.coordinates.logical
-
-        for other in allDisplays {
-            if other.id == display.id { continue }
-
-            let otherFrame = other.coordinates.logical
-            var isAdjacent = false
-            var overlapStart: CGFloat = 0
-            var overlapEnd: CGFloat = 0
-
-            // エッジごとに隣接チェック
-            switch side {
-            case .top:
-                // top: frame.maxY == other.minY
-                if abs(frame.position.y + frame.size.height - otherFrame.position.y) < epsilon {
-                    isAdjacent = true
-                    overlapStart = max(frame.position.x, otherFrame.position.x)
-                    overlapEnd = min(frame.position.x + frame.size.width, otherFrame.position.x + otherFrame.size.width)
-                }
-            case .bottom:
-                // bottom: frame.minY == other.maxY
-                if abs(frame.position.y - (otherFrame.position.y + otherFrame.size.height)) < epsilon {
-                    isAdjacent = true
-                    overlapStart = max(frame.position.x, otherFrame.position.x)
-                    overlapEnd = min(frame.position.x + frame.size.width, otherFrame.position.x + otherFrame.size.width)
-                }
-            case .right:
-                // right: frame.maxX == other.minX
-                if abs(frame.position.x + frame.size.width - otherFrame.position.x) < epsilon {
-                    isAdjacent = true
-                    overlapStart = max(frame.position.y, otherFrame.position.y)
-                    overlapEnd = min(frame.position.y + frame.size.height, otherFrame.position.y + otherFrame.size.height)
-                }
-            case .left:
-                // left: frame.minX == other.maxX
-                if abs(frame.position.x - (otherFrame.position.x + otherFrame.size.width)) < epsilon {
-                    isAdjacent = true
-                    overlapStart = max(frame.position.y, otherFrame.position.y)
-                    overlapEnd = min(frame.position.y + frame.size.height, otherFrame.position.y + otherFrame.size.height)
-                }
-            }
-
-            if isAdjacent && overlapStart < overlapEnd {
-                // PassSegmentを生成
-                let logicalStart: Double
-                let logicalEnd: Double
-                let physicalStart: Double
-                let physicalEnd: Double
-
-                switch side {
-                case .top, .bottom:
-                    // X軸での範囲
-                    logicalStart = overlapStart - frame.position.x
-                    logicalEnd = overlapEnd - frame.position.x
-
-                    let physicalFrame = display.coordinates.physical
-                    physicalStart = (logicalStart / frame.size.width) * physicalFrame.size.width
-                    physicalEnd = (logicalEnd / frame.size.width) * physicalFrame.size.width
-
-                case .left, .right:
-                    // Y軸での範囲
-                    logicalStart = overlapStart - frame.position.y
-                    logicalEnd = overlapEnd - frame.position.y
-
-                    let physicalFrame = display.coordinates.physical
-                    physicalStart = (logicalStart / frame.size.height) * physicalFrame.size.height
-                    physicalEnd = (logicalEnd / frame.size.height) * physicalFrame.size.height
-                }
-
-                let segment = PassSegment(
-                    displayId: display.id,
-                    side: side,
-                    logical: SegmentRange(start: logicalStart, end: logicalEnd),
-                    physical: SegmentRange(start: physicalStart, end: physicalEnd)
-                )
-
-                segments.append(segment)
-            }
-        }
-
-        return segments
-    }
-
-    /// osPassSegmentsのペアリングを設定
-    private static func linkOSPassSegments(displays: inout [Display]) {
-        // 全osPassSegmentをインデックス化
-        var segmentMap: [UUID: (displayIndex: Int, segmentIndex: Int)] = [:]
-
-        for (i, display) in displays.enumerated() {
-            for (j, segment) in display.osPassSegments.enumerated() {
-                segmentMap[segment.id] = (i, j)
-            }
-        }
-
-        // ペアを設定（相互に参照）
-        for i in 0..<displays.count {
-            let display = displays[i]
-            let frame = display.coordinates.logical
-            
-            for j in 0..<displays[i].osPassSegments.count {
-                let segment = displays[i].osPassSegments[j]
-                let side = segment.side
-                
-                // 対向するエッジの方向を決定
                 let oppositeSide: EdgeSide
                 switch side {
                 case .top: oppositeSide = .bottom
@@ -369,175 +247,106 @@ extension WorkspaceConfiguration {
                 case .left: oppositeSide = .right
                 case .right: oppositeSide = .left
                 }
-                
-                // セグメントが実際にどこに位置しているかを計算（グローバル座標）
-                let segmentGlobalRange: (start: CGFloat, end: CGFloat)
-                switch side {
-                case .top, .bottom:
-                    // X軸での範囲
-                    segmentGlobalRange = (
-                        start: frame.position.x + segment.logical.start,
-                        end: frame.position.x + segment.logical.end
-                    )
-                case .left, .right:
-                    // Y軸での範囲
-                    segmentGlobalRange = (
-                        start: frame.position.y + segment.logical.start,
-                        end: frame.position.y + segment.logical.end
-                    )
-                }
-                
-                // 対向するディスプレイとセグメントを探す
-                var bestMatch: (displayIndex: Int, segmentIndex: Int, overlap: CGFloat)?
-                
-                for k in 0..<displays.count {
-                    if k == i { continue }
-                    
-                    let otherDisplay = displays[k]
-                    let otherFrame = otherDisplay.coordinates.logical
-                    
-                    // 対向エッジのセグメントを探す
-                    for m in 0..<displays[k].osPassSegments.count {
-                        let otherSegment = displays[k].osPassSegments[m]
-                        
-                        // 対向エッジでなければスキップ
-                        if otherSegment.side != oppositeSide { continue }
-                        
-                        // otherSegmentのグローバル座標を計算
-                        let otherGlobalRange: (start: CGFloat, end: CGFloat)
-                        switch otherSegment.side {
-                        case .top, .bottom:
-                            otherGlobalRange = (
-                                start: otherFrame.position.x + otherSegment.logical.start,
-                                end: otherFrame.position.x + otherSegment.logical.end
-                            )
-                        case .left, .right:
-                            otherGlobalRange = (
-                                start: otherFrame.position.y + otherSegment.logical.start,
-                                end: otherFrame.position.y + otherSegment.logical.end
-                            )
+
+                for j in 0..<displays.count where j != i {
+                    let other = displays[j]
+                    let otherFrame = other.coordinates.logical
+
+                    var isAdjacent = false
+                    var overlapStart: CGFloat = 0
+                    var overlapEnd: CGFloat = 0
+
+                    switch side {
+                    case .top:
+                        if abs(frame.position.y + frame.size.height - otherFrame.position.y) < epsilon {
+                            isAdjacent = true
+                            overlapStart = max(frame.position.x, otherFrame.position.x)
+                            overlapEnd = min(frame.position.x + frame.size.width, otherFrame.position.x + otherFrame.size.width)
                         }
-                        
-                        // 重複範囲を計算
-                        let overlapStart = max(segmentGlobalRange.start, otherGlobalRange.start)
-                        let overlapEnd = min(segmentGlobalRange.end, otherGlobalRange.end)
-                        let overlap = max(0, overlapEnd - overlapStart)
-                        
-                        if overlap > 0 {
-                            if let current = bestMatch {
-                                if overlap > current.overlap {
-                                    bestMatch = (k, m, overlap)
-                                }
-                            } else {
-                                bestMatch = (k, m, overlap)
-                            }
+                    case .bottom:
+                        if abs(frame.position.y - (otherFrame.position.y + otherFrame.size.height)) < epsilon {
+                            isAdjacent = true
+                            overlapStart = max(frame.position.x, otherFrame.position.x)
+                            overlapEnd = min(frame.position.x + frame.size.width, otherFrame.position.x + otherFrame.size.width)
+                        }
+                    case .right:
+                        if abs(frame.position.x + frame.size.width - otherFrame.position.x) < epsilon {
+                            isAdjacent = true
+                            overlapStart = max(frame.position.y, otherFrame.position.y)
+                            overlapEnd = min(frame.position.y + frame.size.height, otherFrame.position.y + otherFrame.size.height)
+                        }
+                    case .left:
+                        if abs(frame.position.x - (otherFrame.position.x + otherFrame.size.width)) < epsilon {
+                            isAdjacent = true
+                            overlapStart = max(frame.position.y, otherFrame.position.y)
+                            overlapEnd = min(frame.position.y + frame.size.height, otherFrame.position.y + otherFrame.size.height)
                         }
                     }
-                }
-                
-                // ベストマッチをペアとして設定
-                if let match = bestMatch {
-                    let pairedSegment = displays[match.displayIndex].osPassSegments[match.segmentIndex]
-                    displays[i].osPassSegments[j].pairedSegment = pairedSegment
+
+                    if isAdjacent && overlapStart < overlapEnd {
+                        let logicalStart: Double
+                        let logicalEnd: Double
+                        let physicalStart: Double
+                        let physicalEnd: Double
+
+                        switch side {
+                        case .top, .bottom:
+                            logicalStart = overlapStart - frame.position.x
+                            logicalEnd = overlapEnd - frame.position.x
+                            let pf = display.coordinates.physical
+                            physicalStart = (logicalStart / frame.size.width) * pf.size.width
+                            physicalEnd = (logicalEnd / frame.size.width) * pf.size.width
+                        case .left, .right:
+                            logicalStart = overlapStart - frame.position.y
+                            logicalEnd = overlapEnd - frame.position.y
+                            let pf = display.coordinates.physical
+                            physicalStart = (logicalStart / frame.size.height) * pf.size.height
+                            physicalEnd = (logicalEnd / frame.size.height) * pf.size.height
+                        }
+
+                        adjacencies.append(AdjacencyInfo(
+                            displayIndex: i,
+                            side: side,
+                            otherDisplayIndex: j,
+                            otherSide: oppositeSide,
+                            logicalRange: SegmentRange(start: logicalStart, end: logicalEnd),
+                            physicalRange: SegmentRange(start: physicalStart, end: physicalEnd)
+                        ))
+                    }
                 }
             }
         }
-    }
 
-    /// userPassSegmentsのペアリングを設定
-    private static func linkUserPassSegments(displays: inout [Display]) {
-        // osPassSegmentsとuserPassSegmentsのインデックスマッピングを作成
-        // osPassSegments[i] → userPassSegments[i]
-        
-        // userPassSegmentsに対しても同じペアリングロジックを適用
-        for i in 0..<displays.count {
-            let display = displays[i]
-            let frame = display.coordinates.logical
-            
-            for j in 0..<displays[i].passSegments.count {
-                let segment = displays[i].passSegments[j]
-                let side = segment.side
-                
-                // 対向するエッジの方向を決定
-                let oppositeSide: EdgeSide
-                switch side {
-                case .top: oppositeSide = .bottom
-                case .bottom: oppositeSide = .top
-                case .left: oppositeSide = .right
-                case .right: oppositeSide = .left
-                }
-                
-                // セグメントが実際にどこに位置しているかを計算（グローバル座標）
-                let segmentGlobalRange: (start: CGFloat, end: CGFloat)
-                switch side {
-                case .top, .bottom:
-                    // X軸での範囲
-                    segmentGlobalRange = (
-                        start: frame.position.x + segment.logical.start,
-                        end: frame.position.x + segment.logical.end
-                    )
-                case .left, .right:
-                    // Y軸での範囲
-                    segmentGlobalRange = (
-                        start: frame.position.y + segment.logical.start,
-                        end: frame.position.y + segment.logical.end
-                    )
-                }
-                
-                // 対向するディスプレイとセグメントを探す
-                var bestMatch: (displayIndex: Int, segmentIndex: Int, overlap: CGFloat)?
-                
-                for k in 0..<displays.count {
-                    if k == i { continue }
-                    
-                    let otherDisplay = displays[k]
-                    let otherFrame = otherDisplay.coordinates.logical
-                    
-                    // 対向エッジのセグメントを探す
-                    for m in 0..<displays[k].passSegments.count {
-                        let otherSegment = displays[k].passSegments[m]
-                        
-                        // 対向エッジでなければスキップ
-                        if otherSegment.side != oppositeSide { continue }
-                        
-                        // otherSegmentのグローバル座標を計算
-                        let otherGlobalRange: (start: CGFloat, end: CGFloat)
-                        switch otherSegment.side {
-                        case .top, .bottom:
-                            otherGlobalRange = (
-                                start: otherFrame.position.x + otherSegment.logical.start,
-                                end: otherFrame.position.x + otherSegment.logical.end
-                            )
-                        case .left, .right:
-                            otherGlobalRange = (
-                                start: otherFrame.position.y + otherSegment.logical.start,
-                                end: otherFrame.position.y + otherSegment.logical.end
-                            )
-                        }
-                        
-                        // 重複範囲を計算
-                        let overlapStart = max(segmentGlobalRange.start, otherGlobalRange.start)
-                        let overlapEnd = min(segmentGlobalRange.end, otherGlobalRange.end)
-                        let overlap = max(0, overlapEnd - overlapStart)
-                        
-                        if overlap > 0 {
-                            if let current = bestMatch {
-                                if overlap > current.overlap {
-                                    bestMatch = (k, m, overlap)
-                                }
-                            } else {
-                                bestMatch = (k, m, overlap)
-                            }
-                        }
-                    }
-                }
-                
-                // ベストマッチをペアとして設定
-                if let match = bestMatch {
-                    let pairedSegment = displays[match.displayIndex].passSegments[match.segmentIndex]
-                    displays[i].passSegments[j].pairedSegment = pairedSegment
+        // ペアリング: 対向するセグメントを見つけてIDをリンク
+        for i in 0..<adjacencies.count {
+            for j in (i + 1)..<adjacencies.count {
+                let a = adjacencies[i]
+                let b = adjacencies[j]
+                // A→BとB→Aのペアを見つける
+                if a.displayIndex == b.otherDisplayIndex &&
+                   a.otherDisplayIndex == b.displayIndex &&
+                   a.side == b.otherSide &&
+                   a.otherSide == b.side {
+                    adjacencies[i].pairedSegmentId = adjacencies[j].segmentId
+                    adjacencies[j].pairedSegmentId = adjacencies[i].segmentId
                 }
             }
+        }
+
+        // PassSegmentを生成してDisplayに設定
+        for i in 0..<displays.count {
+            displays[i].osPassSegments = adjacencies
+                .filter { $0.displayIndex == i && $0.pairedSegmentId != nil }
+                .map { adj in
+                    PassSegment(
+                        id: adj.segmentId,
+                        displayId: displays[i].id,
+                        side: adj.side,
+                        logical: adj.logicalRange,
+                        physical: adj.physicalRange,
+                        pairedSegmentId: adj.pairedSegmentId!
+                    )
+                }
         }
     }
 }
