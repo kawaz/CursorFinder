@@ -39,6 +39,8 @@ struct PassSegment: Identifiable, Codable {
     let side: EdgeSide
     let logical: SegmentRange
     let physical: SegmentRange
+    /// ペア間で位置率を反転するか（異軸ペアリング時に使用）
+    let invertRatio: Bool
 
     init(
         id: UUID = UUID(),
@@ -46,7 +48,8 @@ struct PassSegment: Identifiable, Codable {
         side: EdgeSide,
         logical: SegmentRange,
         physical: SegmentRange,
-        pairedSegmentId: UUID
+        pairedSegmentId: UUID,
+        invertRatio: Bool = false
     ) {
         self.id = id
         self.displayId = displayId
@@ -54,6 +57,7 @@ struct PassSegment: Identifiable, Codable {
         self.side = side
         self.logical = logical
         self.physical = physical
+        self.invertRatio = invertRatio
     }
 
     /// バリデーション
@@ -70,7 +74,11 @@ struct PassSegment: Identifiable, Codable {
             return pairedSegment.logical.start
         } else {
             // 通常セグメント → 位置比率で補正
-            let ratio = (position - logical.start) / (logical.end - logical.start)
+            var ratio = (position - logical.start) / (logical.end - logical.start)
+            // 異軸ペアリング等で反転が必要な場合
+            if invertRatio {
+                ratio = 1.0 - ratio
+            }
             return pairedSegment.logical.start + ratio * (pairedSegment.logical.end - pairedSegment.logical.start)
         }
     }
@@ -104,7 +112,7 @@ struct EdgeNavigationMap {
         at position: Double,
         displayId: UUID,
         side: EdgeSide
-    ) -> (targetDisplay: Display, targetPosition: Double)? {
+    ) -> (targetDisplay: Display, targetSide: EdgeSide, targetPosition: Double)? {
         // ディスプレイを取得
         guard let display = displays.first(where: { $0.id == displayId }) else {
             return nil
@@ -127,6 +135,6 @@ struct EdgeNavigationMap {
             return nil
         }
 
-        return (targetDisplay, targetPosition)
+        return (targetDisplay, pairedSegment.side, targetPosition)
     }
 }

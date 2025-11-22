@@ -86,7 +86,7 @@ class EdgeCrossingDetector {
         let navigationMap = EdgeNavigationMap(displays: workspace.displays)
 
         // EdgeNavigationMapで越境処理
-        guard let (targetDisplay, targetPosition) = navigationMap.handleCrossing(
+        guard let (targetDisplay, targetSide, targetPosition) = navigationMap.handleCrossing(
             at: position,
             displayId: displayId,
             side: side
@@ -95,14 +95,37 @@ class EdgeCrossingDetector {
             return nil
         }
 
-        // 論理座標に変換
+        // 越境先エッジの軸に応じて論理座標に変換
         let targetFrame = targetDisplay.coordinates.logical
-        let targetPoint = CGPoint(
-            x: targetFrame.position.x + targetPosition,
-            y: targetFrame.position.y
-        )
+        let targetPoint: CGPoint
+        switch targetSide {
+        case .top:
+            // 上エッジに到達 → Y は上端
+            targetPoint = CGPoint(
+                x: targetFrame.position.x + targetPosition,
+                y: targetFrame.position.y + targetFrame.size.height
+            )
+        case .bottom:
+            // 下エッジに到達 → Y は下端
+            targetPoint = CGPoint(
+                x: targetFrame.position.x + targetPosition,
+                y: targetFrame.position.y
+            )
+        case .left:
+            // 左エッジに到達 → X は左端
+            targetPoint = CGPoint(
+                x: targetFrame.position.x,
+                y: targetFrame.position.y + targetPosition
+            )
+        case .right:
+            // 右エッジに到達 → X は右端
+            targetPoint = CGPoint(
+                x: targetFrame.position.x + targetFrame.size.width,
+                y: targetFrame.position.y + targetPosition
+            )
+        }
 
-        NSLog("✅ 越境成功: pos=\(String(format: "%.1f", targetPosition))")
+        NSLog("✅ 越境成功: side=\(targetSide), pos=\(String(format: "%.1f", targetPosition))")
 
         return (targetDisplay, targetPoint)
     }
