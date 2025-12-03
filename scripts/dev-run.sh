@@ -23,24 +23,19 @@ echo "✅ Build succeeded"
 echo ""
 
 # Kill any running instances
-echo "🛑 Stopping any running instances..."
+echo "♻️ Stopping any running instances..."
 pkill -9 LaserGuide 2>/dev/null || true
-sleep 1
+sleep 0.5
 
 echo "🚀 Launching LaserGuide..."
 open build-local/Build/Products/Debug/LaserGuide.app
-
-sleep 2
+sleep 0.5
 
 # Check if running
 if ps aux | grep -v grep | grep "build-local/Build/Products/Debug/LaserGuide.app" > /dev/null; then
     pid=$(ps aux | grep -v grep | grep "build-local/Build/Products/Debug/LaserGuide.app" | awk '{print $2}')
     echo "✅ LaserGuide is running (PID: $pid)"
-    echo ""
-    echo "📋 Test the multi-display PPI correction:"
-    echo "  1. Move mouse between displays with different PPI"
-    echo "  2. Verify laser lines point accurately to cursor on both displays"
-    echo "  3. Check distance indicators are correct when mouse is off-screen"
+    exit 0
 else
     echo "❌ Failed to launch"
     exit 1
