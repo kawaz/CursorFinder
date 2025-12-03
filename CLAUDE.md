@@ -96,4 +96,3 @@ When starting a new session, check:
 - **Homebrew tap**: Separate repository `kawaz/homebrew-laserguide`
 - **Test scripts**: Use provided scripts to avoid repetitive work
 - **Keep this file short**: Remove outdated information regularly
-- docs/multi-display-ppi-correction-implementation.md は古いドキュメントです。削除してください。現在は物理座標をキャリブレーションで設定してそれを元に座標変換を行う方式になりました。物理座標のキャリブレーションを取り入れた経緯とメリットなどもスペックにまとめておいてください。

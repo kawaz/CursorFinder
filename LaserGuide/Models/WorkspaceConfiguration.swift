@@ -159,10 +159,38 @@ struct WorkspaceConfiguration: Codable {
 extension WorkspaceConfiguration {
     /// デフォルトのワークスペースを作成
     static func createDefault(screens: [NSScreen]) -> WorkspaceConfiguration {
-        // 各スクリーンからDisplayを作成
-        var displays = screens.map { Display.create(from: $0) }
+        // 各スクリーンからDisplayを作成（物理座標の初期位置は論理座標から計算）
+        var displays: [Display] = []
 
-        // 物理座標を正規化
+        for screen in screens {
+            // 論理座標（ポイント）を物理座標（mm）に変換するための基準PPIを計算
+            // PPIがわかっている場合はそれを使用、そうでなければデフォルト値を使用
+            let deviceDescription = screen.deviceDescription
+            let displayID = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! CGDirectDisplayID
+            let physicalSizeCG = CGDisplayScreenSize(displayID)
+
+            // PPI計算（物理サイズが取得できる場合）
+            let ppi: CGFloat
+            if physicalSizeCG.width > 0 {
+                let pixelWidth = screen.frame.size.width * screen.backingScaleFactor
+                ppi = pixelWidth / (physicalSizeCG.width / 25.4)
+            } else {
+                ppi = 72.0 * screen.backingScaleFactor  // フォールバック
+            }
+
+            // 論理座標（ポイント）を物理座標（mm）に変換
+            // points → inches → mm
+            let pointsToMm = 25.4 / ppi * screen.backingScaleFactor
+            let physicalPosition = Point2D(
+                x: screen.frame.minX * pointsToMm,
+                y: screen.frame.minY * pointsToMm
+            )
+
+            let display = Display.create(from: screen, physicalPosition: physicalPosition)
+            displays.append(display)
+        }
+
+        // 物理座標を正規化（左下を原点に）
         let minX = displays.map { $0.coordinates.physical.position.x }.min() ?? 0
         let minY = displays.map { $0.coordinates.physical.position.y }.min() ?? 0
 

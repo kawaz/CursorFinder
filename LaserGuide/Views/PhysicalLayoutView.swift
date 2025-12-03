@@ -8,6 +8,8 @@ struct PhysicalLayoutView: View {
     @State private var displays: [Display] = []
     @State private var originalDisplays: [Display] = []
     @State private var configurationKey: String = ""
+    @State private var sceneId: UUID = UUID()  // シーン再作成用
+    @State private var focusedDisplayId: UUID? = nil  // フォーカス中のディスプレイ
 
     /// SpriteKitシーン
     private var scene: PhysicalLayoutScene {
@@ -16,6 +18,9 @@ struct PhysicalLayoutView: View {
         scene.displays = displays
         scene.onDisplaysChanged = { newDisplays in
             displays = newDisplays
+        }
+        scene.onFocusChanged = { displayId in
+            focusedDisplayId = displayId
         }
         return scene
     }
@@ -87,7 +92,7 @@ struct PhysicalLayoutView: View {
                     .foregroundColor(.secondary)
             }
 
-            LogicalLayoutCanvas(displays: displays)
+            LogicalLayoutCanvas(displays: displays, focusedDisplayId: focusedDisplayId)
                 .background(Color.black.opacity(0.03))
                 .cornerRadius(4)
                 .overlay(
@@ -124,6 +129,7 @@ struct PhysicalLayoutView: View {
             }
 
             SpriteView(scene: scene)
+                .id(sceneId)  // displaysが変わったらシーンを再作成
                 .cornerRadius(4)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
@@ -196,9 +202,19 @@ struct PhysicalLayoutView: View {
     }
 
     private func resetToDefault() {
-        // 論理配置を元に物理配置を再計算（簡易版）
-        displays = originalDisplays
-        NSLog("📐 Reset to default layout")
+        // 既存設定を削除して、デフォルトで再生成
+        ConfigurationManager.shared.deleteWorkspace(for: configurationKey)
+
+        // 新しいデフォルト設定を生成
+        let newConfig = WorkspaceConfiguration.createDefault(screens: NSScreen.screens)
+        ConfigurationManager.shared.saveWorkspace(newConfig)
+
+        // 再読み込み
+        displays = newConfig.displays
+        originalDisplays = newConfig.displays
+        sceneId = UUID()  // シーンを再作成
+
+        NSLog("📐 Reset to default layout (deleted and recreated)")
     }
 
     private func openDisplaySettings() {
@@ -213,6 +229,7 @@ struct PhysicalLayoutView: View {
 /// 論理配置を表示するキャンバス（読み取り専用）
 struct LogicalLayoutCanvas: View {
     let displays: [Display]
+    var focusedDisplayId: UUID? = nil
 
     var body: some View {
         Canvas { context, size in
@@ -235,6 +252,7 @@ struct LogicalLayoutCanvas: View {
             for (index, display) in displays.enumerated() {
                 let logical = display.coordinates.logical
                 let color = displayColor(for: index)
+                let isFocused = display.id == focusedDisplayId
 
                 // 座標変換（Y軸反転）
                 let x = offsetX + (logical.position.x - bounds.minX) * scale
@@ -244,17 +262,42 @@ struct LogicalLayoutCanvas: View {
 
                 let rect = CGRect(x: x, y: y, width: width, height: height)
 
-                // 背景
-                context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(0.2)))
+                // 背景（フォーカス時は強調）
+                let fillOpacity = isFocused ? 0.4 : 0.2
+                context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(fillOpacity)))
 
-                // 枠線
-                context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: 2)
+                // 枠線（フォーカス時は太く）
+                let lineWidth: CGFloat = isFocused ? 4 : 2
+                context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: lineWidth)
 
-                // ラベル
-                let text = Text(display.display.name)
+                // グロー効果（フォーカス時）
+                if isFocused {
+                    let glowRect = rect.insetBy(dx: -3, dy: -3)
+                    context.stroke(Path(roundedRect: glowRect, cornerRadius: 4), with: .color(color.opacity(0.5)), lineWidth: 2)
+                }
+
+                // ラベル（名前）
+                let nameText = Text(display.display.name)
                     .font(.caption)
+                    .fontWeight(.bold)
                     .foregroundColor(.white)
-                context.draw(text, at: CGPoint(x: rect.midX, y: rect.midY), anchor: .center)
+                context.draw(nameText, at: CGPoint(x: rect.midX, y: rect.midY - 14), anchor: .center)
+
+                // ラベル（解像度 px）
+                let resolution = display.coordinates.logical.size
+                let resString = "\(Int(resolution.width))x\(Int(resolution.height)) px"
+                let resText = Text(verbatim: resString)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.white)
+                context.draw(resText, at: CGPoint(x: rect.midX, y: rect.midY + 2), anchor: .center)
+
+                // ラベル（物理サイズ mm）
+                let physSize = display.coordinates.physical.size
+                let physString = "\(Int(physSize.width))x\(Int(physSize.height)) mm"
+                let physText = Text(verbatim: physString)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.white)
+                context.draw(physText, at: CGPoint(x: rect.midX, y: rect.midY + 16), anchor: .center)
             }
         }
     }
@@ -276,8 +319,3 @@ struct LogicalLayoutCanvas: View {
     }
 }
 
-// MARK: - Preview
-
-#Preview {
-    PhysicalLayoutView()
-}

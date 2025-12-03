@@ -15,6 +15,9 @@ class PhysicalLayoutScene: SKScene {
     /// 変更通知用クロージャ
     var onDisplaysChanged: (([Display]) -> Void)?
 
+    /// フォーカス状態変更通知（ドラッグ中のディスプレイID、nilでフォーカスなし）
+    var onFocusChanged: ((UUID?) -> Void)?
+
     /// ディスプレイノードのマップ
     private var displayNodes: [UUID: DisplayNode] = [:]
 
@@ -57,7 +60,12 @@ class PhysicalLayoutScene: SKScene {
         // ディスプレイノードを作成
         for (index, display) in displays.enumerated() {
             let node = DisplayNode(display: display, colorIndex: index, scale: displayScale)
-            node.position = physicalToScene(display.coordinates.physical.position)
+            // ノードの中心位置を設定（SKShapeNode(rectOf:)は中心基準）
+            let physicalCenter = CGPoint(
+                x: display.coordinates.physical.position.x + display.coordinates.physical.size.width / 2,
+                y: display.coordinates.physical.position.y + display.coordinates.physical.size.height / 2
+            )
+            node.position = physicalToScene(physicalCenter)
             addChild(node)
             displayNodes[display.id] = node
         }
@@ -131,6 +139,7 @@ class PhysicalLayoutScene: SKScene {
                     y: node.position.y - location.y
                 )
                 node.startDragging()
+                onFocusChanged?(node.displayId)
                 return
             }
         }
@@ -145,8 +154,12 @@ class PhysicalLayoutScene: SKScene {
             y: location.y + dragOffset.y
         )
 
-        // 物理座標を更新（リアルタイム表示用）
-        let physicalPos = sceneToPhysical(node.position)
+        // 物理座標を更新（リアルタイム表示用、中心から左下角へ変換）
+        let physicalCenter = sceneToPhysical(node.position)
+        let physicalPos = CGPoint(
+            x: physicalCenter.x - node.physicalSize.width / 2,
+            y: physicalCenter.y - node.physicalSize.height / 2
+        )
         node.updateCoordinateLabel(physicalPos)
     }
 
@@ -155,8 +168,12 @@ class PhysicalLayoutScene: SKScene {
 
         node.stopDragging()
 
-        // 物理座標を確定
-        let physicalPos = sceneToPhysical(node.position)
+        // 物理座標を確定（中心から左下角へ変換）
+        let physicalCenter = sceneToPhysical(node.position)
+        let physicalPos = CGPoint(
+            x: physicalCenter.x - node.physicalSize.width / 2,
+            y: physicalCenter.y - node.physicalSize.height / 2
+        )
 
         // displaysを更新
         if let index = displays.firstIndex(where: { $0.id == node.displayId }) {
@@ -173,6 +190,9 @@ class PhysicalLayoutScene: SKScene {
         updateDisplayNodes()
 
         draggingNode = nil
+
+        // フォーカス解除
+        onFocusChanged?(nil)
     }
 
     // MARK: - Position Normalization
@@ -195,14 +215,15 @@ class PhysicalLayoutScene: SKScene {
 /// ディスプレイを表すノード
 class DisplayNode: SKNode {
     let displayId: UUID
+    let physicalSize: CGSize  // 物理サイズ（mm）
     private let backgroundNode: SKShapeNode
-    private let labelNode: SKLabelNode
-    private let sizeLabel: SKLabelNode
     private let coordinateLabel: SKLabelNode
     private let displayColor: NSColor
+    private let nodeSize: CGSize
 
     init(display: Display, colorIndex: Int, scale: CGFloat) {
         self.displayId = display.id
+        self.physicalSize = display.coordinates.physical.size
 
         // 色の選択
         let colors: [NSColor] = [.systemBlue, .systemOrange, .systemGreen, .systemPurple, .systemRed, .systemTeal]
@@ -210,30 +231,14 @@ class DisplayNode: SKNode {
 
         // 背景ノード
         let physicalSize = display.coordinates.physical.size
-        let nodeSize = CGSize(width: physicalSize.width * scale, height: physicalSize.height * scale)
+        self.nodeSize = CGSize(width: physicalSize.width * scale, height: physicalSize.height * scale)
 
         backgroundNode = SKShapeNode(rectOf: nodeSize, cornerRadius: 4)
         backgroundNode.fillColor = displayColor.withAlphaComponent(0.2)
         backgroundNode.strokeColor = displayColor
         backgroundNode.lineWidth = 2
 
-        // ディスプレイ名ラベル
-        labelNode = SKLabelNode(text: display.display.name)
-        labelNode.fontName = "Helvetica-Bold"
-        labelNode.fontSize = 12
-        labelNode.fontColor = .white
-        labelNode.verticalAlignmentMode = .center
-        labelNode.horizontalAlignmentMode = .center
-
-        // サイズラベル
-        sizeLabel = SKLabelNode(text: "\(Int(physicalSize.width))×\(Int(physicalSize.height)) mm")
-        sizeLabel.fontName = "Menlo"
-        sizeLabel.fontSize = 10
-        sizeLabel.fontColor = .white
-        sizeLabel.verticalAlignmentMode = .center
-        sizeLabel.horizontalAlignmentMode = .center
-
-        // 座標ラベル
+        // 座標ラベル（左下コーナー）
         let pos = display.coordinates.physical.position
         coordinateLabel = SKLabelNode(text: "(\(Int(pos.x)), \(Int(pos.y)))")
         coordinateLabel.fontName = "Menlo"
@@ -245,19 +250,6 @@ class DisplayNode: SKNode {
         super.init()
 
         addChild(backgroundNode)
-
-        // ラベル背景
-        let labelBg = SKShapeNode(rectOf: CGSize(width: 120, height: 36), cornerRadius: 4)
-        labelBg.fillColor = NSColor.black.withAlphaComponent(0.6)
-        labelBg.strokeColor = .clear
-        labelBg.position = .zero
-        addChild(labelBg)
-
-        labelNode.position = CGPoint(x: 0, y: 6)
-        addChild(labelNode)
-
-        sizeLabel.position = CGPoint(x: 0, y: -8)
-        addChild(sizeLabel)
 
         coordinateLabel.position = CGPoint(x: -nodeSize.width / 2 + 4, y: -nodeSize.height / 2 + 4)
         addChild(coordinateLabel)
