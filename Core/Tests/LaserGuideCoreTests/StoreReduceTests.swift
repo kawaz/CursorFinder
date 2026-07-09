@@ -96,8 +96,12 @@ final class StoreReduceTests: XCTestCase {
     // (c) PB で差し戻し effect + 履歴が差し戻し先
     // ==================
 
-    /// ユーザセグメントが越境位置 (y=500) をカバーしない (PB) 場合、交点へのクランプ effect が出て、
-    /// 履歴は「差し戻し先 = source display (A)」の座標・id で埋め直される。
+    /// ユーザセグメントが越境位置 (y=500) をカバーしない (PB) 場合、クランプ effect が出て、
+    /// 履歴は「差し戻し先 = source display (A)」の id で埋め直される。
+    ///
+    /// clampTo の具体座標値は幾何コアのレビュー (C-1/C-2、半開区間規約下での隣接モニタ所属問題の
+    /// 修正) で「境界値ちょうど → 内向き inset 付き」に変わる予定 (2026-07-10 team-lead 予告)。
+    /// そのため座標は厳密一致させず、effect の種類・件数・所属モニタのみを固定する。
     func testPBCrossingProducesClampEffectAndHistoryStaysOnSourceDisplay() {
         let setup = twoAdjacentDisplaysWithPartialOverlapUserSegments()
         var state = AppState(displays: setup.displays, userSegments: setup.userSegments)
@@ -106,9 +110,11 @@ final class StoreReduceTests: XCTestCase {
 
         let (next, effects) = Store.reduce(
             state, .mouseMoved(location: LogicalPoint(x: 1940, y: 500), deltaSign: DeltaSign(dx: 1, dy: 0)))
-        XCTAssertEqual(effects, [.rewriteEventLocation(LogicalPoint(x: 1920, y: 500))])
-        XCTAssertEqual(next.currentMouse, MouseHistoryEntry(point: LogicalPoint(x: 1920, y: 500), displayId: "A"),
-                       "PB の差し戻し先は source display (A) のまま")
+        guard case let .rewriteEventLocation(clampTo)? = effects.first, effects.count == 1 else {
+            return XCTFail("PB は rewriteEventLocation effect を 1 件出すはず: \(effects)")
+        }
+        XCTAssertEqual(next.currentMouse?.point, clampTo, "履歴の座標は effect が指すクランプ先と同期している")
+        XCTAssertEqual(next.currentMouse?.displayId, "A", "PB の差し戻し先は source display (A) のまま")
         XCTAssertEqual(next.previousMouse?.displayId, "A")
     }
 
@@ -119,6 +125,11 @@ final class StoreReduceTests: XCTestCase {
     /// OS 隣接のない A/C を仮想接続するユーザセグメントで BX→BP ワープが発生すると、
     /// 履歴が着地先 (C) にリセットされる。直後の C 内での小移動は「前回も C」なので
     /// interior になり、誤って PX (旧モニタ A との差分) と判定されないことを固定する。
+    ///
+    /// warpTo の具体座標値は幾何コアのレビュー (C-1/C-2、rate 写像の意味論変更・inset 付き
+    /// clampTo への変更) で変わる予定 (2026-07-10 team-lead 予告)。座標は厳密一致させず、
+    /// 「rewriteEventLocation が 1 件出る」「着地先が C である」ことのみ固定する。フォローアップの
+    /// 移動先も実際の着地点 (dst) からの相対オフセットにして、座標変更に追従できるようにする。
     func testBPWarpResetsHistorySoNextMoveDoesNotFalselyTriggerPX() {
         let setup = farApartDisplaysWithBridgingUserSegments()
         var state = AppState(displays: setup.displays, userSegments: setup.userSegments)
@@ -136,14 +147,14 @@ final class StoreReduceTests: XCTestCase {
         guard case let .rewriteEventLocation(dst)? = warpEffects.first, warpEffects.count == 1 else {
             return XCTFail("BP ワープ effect が 1 件出るはず: \(warpEffects)")
         }
-        XCTAssertEqual(dst.x, 5000.001, accuracy: 1e-9, "inset 込みの paired (C.left) 着地点")
-        XCTAssertEqual(dst.y, 500, accuracy: 1e-9)
+        XCTAssertEqual(afterWarp.currentMouse?.point, dst, "履歴の座標は effect が指す着地点と同期している")
         XCTAssertEqual(afterWarp.currentMouse?.displayId, "C", "履歴がワープ後のモニタ C にリセットされている")
         state = afterWarp
 
-        // 直後の C 内での小移動: 前回も今回も C なので interior。旧 A との PX 誤発火が起きない核心テスト。
+        // 直後の C 内での小移動 (着地点からの相対オフセット): 前回も今回も C なので interior。
+        // 旧 A との PX 誤発火が起きない核心テスト。
         let (afterFollowUp, followUpEffects) = Store.reduce(
-            state, .mouseMoved(location: LogicalPoint(x: 5000.1, y: 500), deltaSign: DeltaSign(dx: 1, dy: 0)))
+            state, .mouseMoved(location: LogicalPoint(x: dst.x + 0.1, y: dst.y), deltaSign: DeltaSign(dx: 1, dy: 0)))
         XCTAssertEqual(followUpEffects, [], "履歴リセットが効いていれば PX は発生しない")
         XCTAssertEqual(afterFollowUp.currentMouse?.displayId, "C")
     }
@@ -157,6 +168,10 @@ final class StoreReduceTests: XCTestCase {
     /// 「OS が通す PX」に変わり、userSegments が空なので PB (クランプ差し戻し) の effect が出る。
     /// 派生 tables が displayConfigurationChanged の reduce だけで再構築され、次の mouseMoved が
     /// 即座にその新構成で判定することを固定する。
+    ///
+    /// clampTo の具体座標値は幾何コアのレビュー (C-1/C-2) で変わる予定 (2026-07-10 team-lead 予告)。
+    /// 座標は厳密一致させず、判定が PX→PB に切り替わったこと (effect の種類・件数) と
+    /// 差し戻し先の所属モニタのみを固定する。
     func testDisplayConfigurationChangeRebuildsTablesForNextJudgement() {
         let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
         let cFar = Display(id: "C", logicalBounds: LogicalRect(minX: 5000, minY: 0, maxX: 6920, maxY: 1080), pose: .identity)
@@ -183,8 +198,9 @@ final class StoreReduceTests: XCTestCase {
         // 直後: 同じ越境操作が今度は OS 隣接ありの PX として扱われ、userSegments が空なので PB。
         let (afterMove, moveEffects) = Store.reduce(
             state, .mouseMoved(location: LogicalPoint(x: 1940, y: 500), deltaSign: DeltaSign(dx: 1, dy: 0)))
-        XCTAssertEqual(moveEffects, [.rewriteEventLocation(LogicalPoint(x: 1920, y: 500))],
-                       "新構成の隣接に基づき PX→PB と判定されるはず")
+        guard case .rewriteEventLocation? = moveEffects.first, moveEffects.count == 1 else {
+            return XCTFail("新構成の隣接に基づき PX→PB (rewriteEventLocation 1 件) と判定されるはず: \(moveEffects)")
+        }
         XCTAssertEqual(afterMove.currentMouse?.displayId, "A", "PB の差し戻し先は source (A)")
     }
 
