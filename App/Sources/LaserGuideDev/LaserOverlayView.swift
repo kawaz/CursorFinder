@@ -1,17 +1,19 @@
-// LaserOverlayView (v1 の四隅→カーソル描画を物理 mm 空間で計算する版、DR-0005)
+// LaserOverlayView — 自ディスプレイの 4 隅からポインタへレーザーを描く SwiftUI ビュー。
 //
-// 各オーバーレイは自ディスプレイに張り付き、以下を描画する:
-//   1. 全ディスプレイの 4 隅を **物理 mm** で列挙する (自ディスプレイの corner だけでなく)
-//   2. マウス位置を「マウスの居るディスプレイの pose」で mm へ変換する
-//   3. 各 corner (mm) → マウス (mm) の直線を、自ディスプレイの pose.toLogical で自ディス
-//      プレイの論理座標へ戻し、自ディスプレイのローカル canvas 座標へ変換して描画
+// 2026-07-10 実機フィードバック反映 (#1 / #2 / #3 / #4、詳細は LaserGeometry.swift の
+// ヘッダコメント):
 //
-// 座標境界 (DR-0005 決定 2 の描画境界規則):
+//   #1 自ディスプレイの 4 角のみを起点にする (他ディスプレイの角の延長線は描かない)
+//   #2 ポインタ移動停止後 `OverlayViewModel.inactivityThreshold` 経過でレーザーを非表示
+//   #3 corner (幅 cornerHalfWidth*2) が底辺、ポインタから standoff 手前が幅 tipHalfWidth*2
+//      の頂点辺となるテーパー付き三角形。ポインタに触れない
+//   #4 pose を経由せず CG global 論理座標のまま self bounds を減算して view local を得る
+//      (Phase 1 で cross-display の mm 空間が共有されていない前提から根本的に修正)
+//
+// 描画境界の変換規則 (DR-0005 決定 2):
 //   - 判定・state は CG y-down グローバル
-//   - view local への変換は「global.x - display.bounds.minX, global.y - display.bounds.minY」
-//   - SwiftUI Canvas は top-left 原点 y-down なので y-flip 不要 (NSHostingView が処理)
-//     (v1 は NSEvent 由来の y-up 座標を使っていたため canvas 内で y-flip していた。v3 は
-//     CGEvent 由来 y-down で統一しているので flip 不要)
+//   - view local への変換: global.x - display.bounds.minX, global.y - display.bounds.minY
+//   - SwiftUI Canvas は top-left 原点 y-down なので y-flip 不要
 import SwiftUI
 import LaserGuideCore
 import simd
@@ -27,87 +29,43 @@ struct LaserOverlayView: View {
             guard let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) else { return }
             let bounds = selfDisplay.logicalBounds
 
-            // 自ディスプレイ内での「マウスの物理位置」を得るために、まずマウスの居るディスプレイを特定。
-            // 権限 fallback (NSEvent monitor) 経由も含めた最新位置を model が保持している。
-            guard let mouseGlobal = model.currentMouseLocation else { return }
-            guard let mouseDisplay = displayContaining(mouseGlobal, in: model.state.displays)
-                ?? nearestDisplay(mouseGlobal, in: model.state.displays)
-            else { return }
-            let mousePhysical = mouseDisplay.pose.toPhysical(mouseGlobal)
+            // #2 アイドル時は非描画 (移動再開で再表示)。currentMouseLocation は保持したままにし、
+            //   再表示時に前回位置から瞬時に描き始める。
+            guard model.isMouseActive, let mouseGlobal = model.currentMouseLocation else { return }
 
-            // 各ディスプレイの 4 隅を mm へ落とし、自ディスプレイの canvas へ戻す。
-            for d in model.state.displays {
-                for corner in fourCorners(of: d.logicalBounds) {
-                    let cornerPhysical = d.pose.toPhysical(corner)
-                    // 自ディスプレイ pose での逆変換 (画面越しに continuous な mm 線を per-display の
-                    // 論理空間へ落とす経路。CG global logical へは戻さない — 自ディスプレイの pose を
-                    // 直接 mm→own logical に使う)。
-                    let startInSelfLogical = selfDisplay.pose.toLogical(cornerPhysical)
-                    let mouseInSelfLogical = selfDisplay.pose.toLogical(mousePhysical)
-
-                    let p0 = viewLocal(startInSelfLogical, bounds: bounds)
-                    let p1 = viewLocal(mouseInSelfLogical, bounds: bounds)
-
-                    // 自 canvas 外は描画しない (SwiftUI Canvas がクリップ) — 極端に長い線でも安全。
-                    drawLaser(context: context, from: p0, to: p1)
-                }
+            // #1 自ディスプレイの 4 隅のみ。#4 pose を経由しない。
+            let target = LaserGeometry.viewLocal(mouseGlobal, in: bounds)
+            for corner in LaserGeometry.fourCorners(of: bounds) {
+                let start = LaserGeometry.viewLocal(corner, in: bounds)
+                drawLaser(context: context, from: start, to: target)
             }
         }
         .drawingGroup(opaque: false, colorMode: .nonLinear)
         .allowsHitTesting(false)
     }
 
-    // ================================
-    // 描画補助
-    // ================================
+    private func drawLaser(context: GraphicsContext, from corner: CGPoint, to pointer: CGPoint) {
+        // #3 ポインタ手前で止めるテーパー: standoff 距離だけ手前に頂点を戻す。
+        //   ポインタが角に極端に近いと描画不能 (nil)。
+        guard let apex = LaserGeometry.taperApexPoint(
+            from: corner, to: pointer, standoff: LaserGeometry.defaultStandoffDistance)
+        else { return }
 
-    private func fourCorners(of r: LogicalRect) -> [LogicalPoint] {
-        [
-            LogicalPoint(x: r.minX, y: r.minY),
-            LogicalPoint(x: r.maxX, y: r.minY),
-            LogicalPoint(x: r.minX, y: r.maxY),
-            LogicalPoint(x: r.maxX, y: r.maxY),
-        ]
-    }
-
-    private func viewLocal(_ p: LogicalPoint, bounds: LogicalRect) -> CGPoint {
-        CGPoint(x: p.x - bounds.minX, y: p.y - bounds.minY)
-    }
-
-    private func displayContaining(_ p: LogicalPoint, in displays: [Display]) -> Display? {
-        displays.first(where: { $0.logicalBounds.containsHalfOpen(p) })
-    }
-
-    /// 半開区間包含から漏れた境界点向けの近傍フォールバック。中心距離で選ぶ。
-    private func nearestDisplay(_ p: LogicalPoint, in displays: [Display]) -> Display? {
-        displays.min(by: { a, b in
-            centerDist2(p, a.logicalBounds) < centerDist2(p, b.logicalBounds)
-        })
-    }
-
-    private func centerDist2(_ p: LogicalPoint, _ r: LogicalRect) -> Double {
-        let cx = (r.minX + r.maxX) / 2
-        let cy = (r.minY + r.maxY) / 2
-        let dx = p.x - cx; let dy = p.y - cy
-        return dx * dx + dy * dy
-    }
-
-    private func drawLaser(context: GraphicsContext, from p0: CGPoint, to p1: CGPoint) {
-        let s = SIMD2<Float>(Float(p0.x), Float(p0.y))
-        let t = SIMD2<Float>(Float(p1.x), Float(p1.y))
+        let s = SIMD2<Float>(Float(corner.x), Float(corner.y))
+        let t = SIMD2<Float>(Float(apex.x), Float(apex.y))
         let delta = t - s
         let dist = simd.length(delta)
         guard dist > 1 else { return }
 
         let n = delta / dist
         let perp = SIMD2<Float>(-n.y, n.x)
-        let cornerHalfWidth: Float = 8
-        let targetHalfWidth: Float = 0.5
+        let cornerHalfWidth = Float(LaserGeometry.defaultCornerHalfWidth)
+        let tipHalfWidth = Float(LaserGeometry.defaultTipHalfWidth)
 
         let c1 = s + perp * cornerHalfWidth
         let c2 = s - perp * cornerHalfWidth
-        let t1 = t + perp * targetHalfWidth
-        let t2 = t - perp * targetHalfWidth
+        let t1 = t + perp * tipHalfWidth
+        let t2 = t - perp * tipHalfWidth
 
         let path = Path { path in
             path.move(to: CGPoint(x: CGFloat(c1.x), y: CGFloat(c1.y)))
@@ -121,6 +79,6 @@ struct LaserOverlayView: View {
             .init(color: Color.yellow.opacity(0.65), location: 0.35),
             .init(color: Color.white.opacity(0.35), location: 1.0),
         ])
-        context.fill(path, with: .linearGradient(gradient, startPoint: p0, endPoint: p1))
+        context.fill(path, with: .linearGradient(gradient, startPoint: corner, endPoint: apex))
     }
 }
