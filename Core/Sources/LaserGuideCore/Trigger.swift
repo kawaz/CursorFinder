@@ -10,6 +10,11 @@
 // delta は「符号のみ」に依存する契約 (DR-0006 決定 3)。大きさに触らない。
 // エッジ上を滑る動き (delta が接線方向のみ) は BX にしない。
 // 角の斜め越境で複数 side が候補になる場合は優先度リスト top → bottom → left → right で決定的。
+//
+// エッジ判定 ε (docs/findings/2026-07-09-macos-display-api-verification.md §4 の実機観測):
+//   OS の CGEventTap クランプは min 側エッジは境界値ちょうど (例: x=0.00) に落ちるが、
+//   max 側エッジは境界値 − 0.02 px (例: x=2055.98) に落ちる。座標は Double で小数を持つ。
+//   よって「エッジ上」の判定は == では書けず、ε 近傍 (デフォルト 0.1 px、API で調整可能) で行う。
 import Foundation
 
 public struct LineSegment: Equatable, Hashable, Sendable {
@@ -25,12 +30,20 @@ public enum MoveClass: Equatable, Hashable, Sendable {
 }
 
 public enum Trigger {
+
+    /// エッジ判定の許容誤差デフォルト値 (px)。実機観測 (max 側 -0.02 px オフセット) を吸収する幅。
+    /// 0.1 は「実測 0.02 に十分な余裕を持たせつつ、モニタ内 1 px の粒度は区別できる」中間値。
+    public static let defaultEdgeEpsilon: Double = 0.1
+
     /// 2 世代履歴とその瞬間の delta 符号から移動を 3 分類する。
+    /// - Parameter edgeEpsilon: BX 判定でエッジ上とみなす許容誤差 (px)。実機 CGEventTap の
+    ///   クランプは max 側で境界値 − 0.02 px に落ちるため、== 比較では BX を取り逃す。
     public static func classify(
         prev: (point: LogicalPoint, displayId: String?),
         current: (point: LogicalPoint, displayId: String?),
         deltaSign: (dx: Int, dy: Int),
-        displays: [Display]
+        displays: [Display],
+        edgeEpsilon: Double = Trigger.defaultEdgeEpsilon
     ) -> MoveClass {
         // PX: 所属モニタ id 変化。prev.displayId が nil (初回など) の時は PX ではなく interior 扱い。
         if let prevId = prev.displayId, prev.displayId != current.displayId {
@@ -40,12 +53,12 @@ public enum Trigger {
                 currentDisplayId: current.displayId
             )
         }
-        // BX: current がエッジ上 + delta 符号が外向き。優先度は top → bottom → left → right。
+        // BX: current がエッジ上 (ε 近傍) + delta 符号が外向き。優先度は top → bottom → left → right。
         if let curId = current.displayId,
            let d = displays.first(where: { $0.id == curId }) {
             let priorities: [Side] = [.top, .bottom, .left, .right]
             for side in priorities {
-                if isOnEdge(current.point, display: d, side: side) &&
+                if isOnEdge(current.point, display: d, side: side, epsilon: edgeEpsilon) &&
                     isDeltaOutward(deltaSign, side: side) {
                     return .bx(displayId: curId, side: side)
                 }
@@ -58,12 +71,16 @@ public enum Trigger {
     // internal 補助
     // ================================
 
-    internal static func isOnEdge(_ p: LogicalPoint, display d: Display, side: Side) -> Bool {
+    /// 点 p が display の指定 side 上にあるかを ε 近傍で判定する。
+    /// - 「固定軸」は abs(p.axis - edgeCoord) <= epsilon で判定 (実機 max 側 -0.02 px オフセット吸収)
+    /// - 「along-edge 軸」は矩形の範囲内であること (こちらは通常 OS 出力が矩形内に収まるので厳密)
+    internal static func isOnEdge(_ p: LogicalPoint, display d: Display, side: Side, epsilon: Double) -> Bool {
+        let b = d.logicalBounds
         switch side {
-        case .top:    return p.y == d.logicalBounds.minY && (d.logicalBounds.minX...d.logicalBounds.maxX).contains(p.x)
-        case .bottom: return p.y == d.logicalBounds.maxY && (d.logicalBounds.minX...d.logicalBounds.maxX).contains(p.x)
-        case .left:   return p.x == d.logicalBounds.minX && (d.logicalBounds.minY...d.logicalBounds.maxY).contains(p.y)
-        case .right:  return p.x == d.logicalBounds.maxX && (d.logicalBounds.minY...d.logicalBounds.maxY).contains(p.y)
+        case .top:    return abs(p.y - b.minY) <= epsilon && p.x >= b.minX - epsilon && p.x <= b.maxX + epsilon
+        case .bottom: return abs(p.y - b.maxY) <= epsilon && p.x >= b.minX - epsilon && p.x <= b.maxX + epsilon
+        case .left:   return abs(p.x - b.minX) <= epsilon && p.y >= b.minY - epsilon && p.y <= b.maxY + epsilon
+        case .right:  return abs(p.x - b.maxX) <= epsilon && p.y >= b.minY - epsilon && p.y <= b.maxY + epsilon
         }
     }
 

@@ -96,6 +96,54 @@ final class TriggerClassificationTests: XCTestCase {
         XCTAssertEqual(m, .bx(displayId: "A", side: .bottom))
     }
 
+    /// 実機観測: max 側エッジは境界値 − 0.02 px の位置にクランプされる (docs/findings/
+    /// 2026-07-09-macos-display-api-verification.md §4)。== 比較では取り逃すので ε 近傍判定必須。
+    /// このケースは right 辺 (maxX=1920) で observedX=1919.98 → BX と判定されるべき。
+    func testBXOnMaxSideEdgeWithOSClampOffset() {
+        let ds = twoDisplays()
+        let m = Trigger.classify(
+            prev: (LogicalPoint(x: 1900, y: 500), "A"),
+            current: (LogicalPoint(x: 1919.98, y: 500), "A"),  // 実機 max クランプ位置
+            deltaSign: (dx: 1, dy: 0),
+            displays: ds)
+        XCTAssertEqual(m, .bx(displayId: "A", side: .right))
+    }
+
+    /// min 側エッジは実機で境界値ちょうど (0.00) にクランプ。ε 近傍が広すぎて誤検出しないことを固定。
+    /// (top 辺は y=0.00、delta.dy=-1 で BX)
+    func testBXOnMinSideEdgeAtExactCoord() {
+        let ds = twoDisplays()
+        let m = Trigger.classify(
+            prev: (LogicalPoint(x: 500, y: 20), "A"),
+            current: (LogicalPoint(x: 500, y: 0.0), "A"),
+            deltaSign: (dx: 0, dy: -1),
+            displays: ds)
+        XCTAssertEqual(m, .bx(displayId: "A", side: .top))
+    }
+
+    /// ε より遠い位置は BX にしない (誤検出防止)。ε=0.1 のデフォルトで 0.5 px 内側は interior。
+    func testNotBXWhenFurtherThanEpsilonFromEdge() {
+        let ds = twoDisplays()
+        let m = Trigger.classify(
+            prev: (LogicalPoint(x: 1900, y: 500), "A"),
+            current: (LogicalPoint(x: 1919.5, y: 500), "A"),  // -0.5 px、ε=0.1 の外側
+            deltaSign: (dx: 1, dy: 0),
+            displays: ds)
+        XCTAssertEqual(m, .interior)
+    }
+
+    /// edgeEpsilon 引数を大きくすると内側の点も BX 扱いになる (API 挙動の説明的固定)。
+    func testEdgeEpsilonIsConfigurable() {
+        let ds = twoDisplays()
+        let m = Trigger.classify(
+            prev: (LogicalPoint(x: 1900, y: 500), "A"),
+            current: (LogicalPoint(x: 1919.0, y: 500), "A"),  // -1.0 px 内側
+            deltaSign: (dx: 1, dy: 0),
+            displays: ds,
+            edgeEpsilon: 2.0)
+        XCTAssertEqual(m, .bx(displayId: "A", side: .right))
+    }
+
     /// 左上角 (0,0) で delta (-x, -y) → top と left が候補、top が優先。
     func testCornerPriorityTopBeatsLeft() {
         let ds = twoDisplays()
