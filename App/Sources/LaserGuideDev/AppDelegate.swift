@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
     private var runtime: AppRuntime!
     private var tap: EventTapController?
     private let permission = PermissionMonitor()
+    /// 2026-07-10 フィードバック #5 対応: tap から除外したドラッグ系イベントでもレーザーが
+    /// カーソルを追えるよう、位置更新だけを NSEvent global monitor で拾う (warp は発火しない)。
+    private var dragPositionMonitor: Any?
 
     private var overlays: [OverlayWindowController] = []
     private var overlayModelById: [String: OverlayViewModel] = [:]
@@ -54,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
                 startLaserOnlyFallback()
             } else {
                 self.tap = ctrl
+                // #5: tap から除外したドラッグ系イベントでも overlay がカーソルを追えるよう、
+                //   位置更新だけを別経路 (NSEvent global monitor) で拾う。warp は発火しない。
+                startDragPositionMonitor()
             }
         } else {
             startLaserOnlyFallback()
@@ -68,6 +74,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
     func applicationWillTerminate(_ notification: Notification) {
         tap?.stop()
         permission.stopLaserOnly()
+        stopDragPositionMonitor()
+    }
+
+    // MARK: - Drag position monitor (#5)
+
+    /// tap eventsOfInterest から除外したドラッグ系イベントの位置更新だけを購読する。
+    /// NSEvent.mouseLocation は y-up (bottom-left) なので main NSScreen 高さで CG y-down に変換。
+    private func startDragPositionMonitor() {
+        stopDragPositionMonitor()
+        dragPositionMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        ) { [weak self] _ in
+            guard let self else { return }
+            let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
+            let p = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
+            for (_, vm) in self.overlayModelById { vm.apply(mouseLocation: p) }
+        }
+    }
+
+    private func stopDragPositionMonitor() {
+        if let m = dragPositionMonitor { NSEvent.removeMonitor(m) }
+        dragPositionMonitor = nil
     }
 
     // MARK: - Screen change
@@ -154,6 +182,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
         let warpToggle = NSMenuItem(title: "Warp: on", action: #selector(toggleWarp), keyEquivalent: "w")
         warpToggle.target = self
         menu.addItem(warpToggle)
+        // #5 レイテンシ dump: 現在のサンプル集計を NSLog に出す。実マウス操作の後に kawaz が
+        //   選ぶ運用 (自動計測が難しいため runbook に手順を追記)。
+        let latencyDump = NSMenuItem(title: "Dump tap latency", action: #selector(dumpLatency), keyEquivalent: "l")
+        latencyDump.target = self
+        menu.addItem(latencyDump)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit LaserGuide (dev)", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -170,6 +203,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
         } else {
             tap?.stop()
         }
+    }
+
+    @objc private func dumpLatency() {
+        guard let summary = tap?.latency.summary() else {
+            NSLog("[LaserGuide] no latency samples yet (move the mouse first)")
+            return
+        }
+        NSLog("[LaserGuide] %@", summary.oneLineDescription)
     }
 
     @objc private func quit() {

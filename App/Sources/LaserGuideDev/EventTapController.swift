@@ -5,9 +5,16 @@
 //   その場で event.location に書き換えて返す (同期性契約、DR-0004)
 // - tapDisabledByTimeout / tapDisabledByUserInput は eventTapDisabled action として dispatch し、
 //   interpreter が reenableTap effect で CGEvent.tapEnable を呼び直す
-// - 権限なしで tapCreate が nil を返す状況は degrade モード (permission fallback) へ委ねる
-//   (v1 の 6cab429 版は起動時 AXIsProcessTrustedWithOptions でしか見ておらず、実行中の失効も
-//   同じ経路で扱う設計にする)
+//
+// 2026-07-10 実機フィードバック #5:
+//   - eventsOfInterest を **mouseMoved のみ**に絞る。leftMouseDragged / rightMouseDragged /
+//     otherMouseDragged は tap 経路から除外し、window ドラッグを OS 側へ素通しさせる
+//     (ドラッグ中のワープは元々ユーザ体験として望ましくない上、tap callback にドラッグ
+//     イベント列を流し込むと reduce + SwiftUI 更新のキュー滞留が「止めても行き過ぎる」
+//     症状の原因になっていた)
+//   - callback の reduce 所要時間を LatencyTracker で計測 (DR-0004 の p50/p99 実装)
+//   - レーザー描画に必要なドラッグ中のポインタ位置は AppDelegate 側の NSEvent global
+//     monitor で拾う (別経路、warp は発火しない)
 import CoreGraphics
 import Foundation
 import LaserGuideCore
@@ -19,6 +26,8 @@ public final class EventTapController {
     private var runLoopSource: CFRunLoopSource?
     private var lastLocation: CGPoint?
 
+    public let latency = LatencyTracker()
+
     public init(runtime: AppRuntime) {
         self.runtime = runtime
     }
@@ -28,12 +37,8 @@ public final class EventTapController {
     @discardableResult
     public func start() -> Bool {
         guard eventTap == nil else { return true }
-        let mask = CGEventMask(
-            (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
-            | (1 << CGEventType.otherMouseDragged.rawValue)
-        )
+        // #5: mouseMoved のみ。ドラッグ系は OS へ素通し。
+        let mask = CGEventMask(1 << CGEventType.mouseMoved.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
@@ -92,6 +97,7 @@ public final class EventTapController {
             break
         }
 
+        let start = DispatchTime.now().uptimeNanoseconds
         let loc = event.location
         let deltaX = event.getIntegerValueField(.mouseEventDeltaX)
         let deltaY = event.getIntegerValueField(.mouseEventDeltaY)
@@ -112,6 +118,8 @@ public final class EventTapController {
             event.location = CGPoint(x: p.x, y: p.y)
             lastLocation = event.location
         }
+        let end = DispatchTime.now().uptimeNanoseconds
+        latency.record(nanoseconds: end &- start)
         return Unmanaged.passUnretained(event)
     }
 
