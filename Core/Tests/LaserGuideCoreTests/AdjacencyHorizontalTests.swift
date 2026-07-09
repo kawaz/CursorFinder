@@ -64,4 +64,28 @@ final class AdjacencyHorizontalTests: XCTestCase {
         let segs = Adjacency.detectOSPassSegments([a, b])
         XCTAssertEqual(segs.count, 0, "1 点接触はエッジ接続として扱わない")
     }
+
+    /// 隙間がある 2 枚 (物理的に接触していない) は隣接 0 件。BP/BB のテスト構成が前提とする
+    /// 「物理的に離れた 2 枚は OS 隣接なし」を Adjacency 側でも直接固定する (m-1 minor)。
+    func testGapBetweenTwoDisplaysIsNotAdjacent() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        // B は A の右に隙間 (100px) を空けて配置。maxX(A)=1920, minX(B)=2020 で接触しない。
+        let b = Display(id: "B", logicalBounds: LogicalRect(minX: 2020, minY: 0, maxX: 3940, maxY: 1080), pose: .identity)
+        let segs = Adjacency.detectOSPassSegments([a, b])
+        XCTAssertEqual(segs.count, 0, "隙間がある 2 枚は接触辺を持たない")
+    }
+
+    /// 3 枚横並び (A-B-C 隣接) では隣接ペアが 2 組 (A-B, B-C) で計 4 セグメントになる。
+    /// A-C は直接接触しない (m-1 minor: 複数枚構成での隣接検出の網羅性を固定)。
+    func testThreeDisplaysSideBySideProduceFourSegments() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let b = Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity)
+        let c = Display(id: "C", logicalBounds: LogicalRect(minX: 3840, minY: 0, maxX: 5760, maxY: 1080), pose: .identity)
+        let segs = Adjacency.detectOSPassSegments([a, b, c])
+        XCTAssertEqual(segs.count, 4, "A-B と B-C の 2 接触 = 4 セグメント (A-C の直接接触分は含まれない)")
+
+        XCTAssertEqual(segs.filter { $0.displayId == "A" }.count, 1, "A は B とのみ接触")
+        XCTAssertEqual(segs.filter { $0.displayId == "B" }.count, 2, "B は A・C 両方と接触")
+        XCTAssertEqual(segs.filter { $0.displayId == "C" }.count, 1, "C は B とのみ接触")
+    }
 }

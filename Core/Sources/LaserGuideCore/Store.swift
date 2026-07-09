@@ -48,7 +48,7 @@ public enum Store {
             prev: (point: prevEntry?.point ?? location, displayId: prevEntry?.displayId),
             current: (point: location, displayId: currentDisplayId),
             deltaSign: (dx: deltaSign.dx, dy: deltaSign.dy),
-            displays: state.tables.displays,
+            tables: state.tables,
             edgeEpsilon: state.configuration.edgeEpsilon
         )
 
@@ -69,12 +69,12 @@ public enum Store {
                 return (updated, [.rewriteEventLocation(clampTo)])
             }
 
-        case let .bx(displayId, side):
-            let outcome = Judgement.judgeBlocked(
-                at: location, displayId: displayId, side: side, tables: state.tables,
+        case let .bx(displayId, sides):
+            let outcome = Judgement.judgeBlockedWithFallback(
+                at: location, displayId: displayId, sides: sides, tables: state.tables,
                 inwardInsetMillimeters: state.configuration.warpInwardInsetMillimeters)
             switch outcome {
-            case .block:
+            case .block, .blockDanglingReference:
                 return (shiftHistory(state, to: location, displayId: displayId), [])
             case let .pass(warpTo):
                 // DR-0004: ワープ後の履歴リセット。着地先モニタを warpTo の包含判定で確定し、

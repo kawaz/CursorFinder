@@ -160,6 +160,38 @@ final class StoreReduceTests: XCTestCase {
     }
 
     // ==================
+    // (d-2) カドで優先辺が block でも次候補辺で BP ワープが成立する (M-2, Store 経由の統合確認)
+    // ==================
+
+    /// A の右下カドへ斜めに押し付ける。bottom 辺は OS 隣接も userSegment もない (BB)、
+    /// right 辺は OS 隣接がなく userSegment で C へ橋渡し (BP)。優先度は bottom が先だが、
+    /// Trigger.classify が両候補を返し、Store 経由で Judgement.judgeBlockedWithFallback が
+    /// bottom (block) → right (pass) と 2 段評価してワープが成立することを固定する。
+    func testCornerFallbackWarpsViaSecondCandidateWhenPrimarySideBlocked() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let c = Display(id: "C", logicalBounds: LogicalRect(minX: 5000, minY: 0, maxX: 6920, maxY: 1080), pose: .identity)
+        let userSegments = [
+            PassSegment(id: "u-A", displayId: "A", side: .right, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "u-C"),
+            PassSegment(id: "u-C", displayId: "C", side: .left, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "u-A"),
+        ]
+        var state = AppState(displays: [a, c], userSegments: userSegments)
+
+        // A のカド付近にいる
+        (state, _) = Store.reduce(state, .mouseMoved(location: LogicalPoint(x: 1900, y: 1060), deltaSign: DeltaSign(dx: 1, dy: 1)))
+        XCTAssertEqual(state.currentMouse?.displayId, "A")
+
+        // カド近傍 (実機 max クランプ位置、A 内に留まる ε 近傍) へ、右下方向の delta で押し付け。
+        // ちょうど (1920,1080) だと半開区間規約でどの display にも所属しなくなり PX 経路に化けて
+        // しまうため、A 内側に留まる値を使う (testBXOnMaxSideEdgeWithOSClampOffset と同じ考え方)。
+        let (afterMove, effects) = Store.reduce(
+            state, .mouseMoved(location: LogicalPoint(x: 1919.98, y: 1079.98), deltaSign: DeltaSign(dx: 1, dy: 1)))
+        guard case .rewriteEventLocation? = effects.first, effects.count == 1 else {
+            return XCTFail("bottom が block でも right 候補で BP ワープが成立するはず: \(effects)")
+        }
+        XCTAssertEqual(afterMove.currentMouse?.displayId, "C", "フォールバックで採用された right 候補の着地先は C")
+    }
+
+    // ==================
     // (e) 構成変更で tables 再構築、直後の判定が新構成で動く
     // ==================
 

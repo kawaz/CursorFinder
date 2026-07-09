@@ -34,4 +34,26 @@ public struct WarpTables: Equatable, Hashable, Sendable {
 
     public func osSegment(id: String) -> PassSegment? { osSegments.first(where: { $0.id == id }) }
     public func userSegment(id: String) -> PassSegment? { userSegments.first(where: { $0.id == id }) }
+
+    /// 指定位置 (displayId, side, along) の EdgeType を osSegments/userSegments の所属差分から導出する
+    /// (DR-0006 決定 1: EdgeType は永続モデルではなく判定結果の派生語彙)。UI render model 用 (m-6)。
+    public func edgeType(displayId: String, side: Side, along: Double) -> EdgeType {
+        let hasOS = osSegments.contains { $0.displayId == displayId && $0.side == side && $0.containsAlongEdgeLogical(along) }
+        let hasUser = userSegments.contains { $0.displayId == displayId && $0.side == side && $0.containsAlongEdgeLogical(along) }
+        switch (hasOS, hasUser) {
+        case (true, true): return .pp
+        case (true, false): return .pb
+        case (false, true): return .bp
+        case (false, false): return .bb
+        }
+    }
+}
+
+/// 4 状態の判定結果語彙 (DR-0006 決定 1)。保存されるのは osSegments/userSegments の集合のみで、
+/// この enum はそこから導出される表示・テスト記述専用の値。
+public enum EdgeType: Equatable, Hashable, Sendable {
+    case pp  // OS 通過可 + 仮想通過可
+    case pb  // OS 通過可 + 仮想ブロック
+    case bp  // OS ブロック + 仮想通過可
+    case bb  // OS ブロック + 仮想ブロック
 }

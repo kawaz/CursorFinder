@@ -51,4 +51,41 @@ final class BoundaryTests: XCTestCase {
         )
         XCTAssertEqual(result.y, 810, accuracy: 1e-9)
     }
+
+    // ==================
+    // m-3: 着地点の pairedDisplay.logicalBounds クランプ
+    // (V3 の "PP diagonal crossing clamps to monitor" 輪郭の復元)
+    // ==================
+
+    /// rate 写像で交点がセグメント末端 (rate=1.0) の場合、paired 側の着地点は
+    /// pairedDisplay の along レンジ上限ちょうどになる。半開区間規約 ([min,max)) の下ではこれは
+    /// pairedDisplay の外側 (所属外) になってしまうため、内側へクランプされることを固定する。
+    func testM3_RateMappingWarpDestinationClampsToPairedDisplayBoundsAtSegmentEnd() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let b = Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity)
+        let src = PassSegment(id: "u-A", displayId: "A", side: .right, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "u-B")
+        let dst = PassSegment(id: "u-B", displayId: "B", side: .left, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "u-A")
+        let result = RateMapping.warpDestination(
+            crossingPoint: LogicalPoint(x: 1920, y: 1080),  // rate = 1.0 (セグメント末端)
+            sourceSegment: src, sourceDisplay: a,
+            pairedSegment: dst, pairedDisplay: b
+        )
+        XCTAssertLessThan(result.y, b.logicalBounds.maxY, "半開区間規約下で B に所属する内側の値であること")
+        XCTAssertEqual(result.y, b.logicalBounds.maxY - RateMapping.boundaryInwardInsetLogicalPixels, accuracy: 1e-9)
+    }
+
+    /// PhysicalProjection でも同じクランプが効くことを固定する (物理投影の物理端到達ケース)。
+    func testM3_PhysicalProjectionClampsToPairedDisplayBoundsAtPhysicalRangeEnd() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let b = Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity)
+        let onA = PassSegment(id: "os-a", displayId: "A", side: .right, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "os-b")
+        let onB = PassSegment(id: "os-b", displayId: "B", side: .left, logicalStart: 0, logicalEnd: 1080, pairedSegmentId: "os-a")
+        let result = PhysicalProjection.project(
+            crossingPoint: LogicalPoint(x: 1920, y: 1080),  // A のレンジ上限 (物理 = B のレンジ上限と一致)
+            sourceSegment: onA, sourceDisplay: a,
+            pairedSegment: onB, pairedDisplay: b
+        )
+        XCTAssertLessThan(result.y, b.logicalBounds.maxY, "半開区間規約下で B に所属する内側の値であること")
+        XCTAssertEqual(result.y, b.logicalBounds.maxY - RateMapping.boundaryInwardInsetLogicalPixels, accuracy: 1e-9)
+    }
 }

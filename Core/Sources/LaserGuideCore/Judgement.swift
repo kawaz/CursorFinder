@@ -25,12 +25,19 @@ public enum CrossingJudgement: Equatable, Hashable, Sendable {
 /// BX (ネイティブブロック) 時のワープ判定結果
 public enum BXOutcome: Equatable, Hashable, Sendable {
     case pass(warpTo: LogicalPoint)        // BP: paired モニタへワープ
-    case block                             // BB: 何もしない
+    case block                             // BB: 何もしない (userSegment が無い、または OS が通す辺での誤検出)
+    /// userSegment はあるが pairedSegmentId が指す先 (userSegment 自体、または対応 display) が
+    /// 存在しない「参照切れ」。挙動は block と同じ (ワープしない) だが、原因が違うことを診断情報として
+    /// 区別する (DR-0007 決定 7 の inactive 可視化用、m-5)。
+    case blockDanglingReference(pairedSegmentId: String)
 }
 
 public enum Judgement {
 
     /// PX 時の判定。sourceDisplay の各辺の OS セグメントに対し、prev→current 線分との交点を探す。
+    /// カド越しの斜め移動では複数辺と交わりうる。id 順 (= osSegments の配列順) ではなく、移動線分
+    /// パラメータ t が最小の交点 (= line.from に最も近い、実際に最初に到達する辺) を採用する
+    /// (m-2 minor: 配列順は生成順の副産物であって「最初に触れる辺」の意味を持たないため)。
     public static func judgeCrossing(
         line: LineSegment,
         sourceDisplayId: String,
@@ -38,26 +45,34 @@ public enum Judgement {
     ) -> CrossingJudgement {
         guard let source = tables.display(sourceDisplayId) else { return .noCrossing }
 
-        // 優先度リスト順で最初に見つかった OS セグメントを採用 (DR-0006 決定 5)
+        var best: (t: Double, hit: LogicalPoint, seg: PassSegment)?
         for seg in tables.osSegments where seg.displayId == sourceDisplayId {
-            guard let hit = intersectLineWithEdge(line, display: source, side: seg.side) else { continue }
+            guard let (hit, t) = intersectLineWithEdgeParam(line, display: source, side: seg.side) else { continue }
             let alongLogical = seg.side.isHorizontal ? hit.x : hit.y
             guard seg.containsAlongEdgeLogical(alongLogical) else { continue }
-
-            // userSegments に同じ (displayId, side) で along を含むものがあれば PP
-            let hasUser = tables.userSegments.contains { us in
-                us.displayId == sourceDisplayId
-                    && us.side == seg.side
-                    && us.containsAlongEdgeLogical(alongLogical)
-            }
-            if hasUser {
-                return .pp
-            } else {
-                // PB: 交点上にクランプ (交点自体は source display のエッジ上、= OS がクランプする位置)
-                return .pb(clampTo: hit)
+            if best == nil || t < best!.t {
+                best = (t, hit, seg)
             }
         }
-        return .noCrossing
+        guard let winner = best else { return .noCrossing }
+
+        let alongLogical = winner.seg.side.isHorizontal ? winner.hit.x : winner.hit.y
+        // userSegments に同じ (displayId, side) で along を含むものがあれば PP
+        let hasUser = tables.userSegments.contains { us in
+            us.displayId == sourceDisplayId
+                && us.side == winner.seg.side
+                && us.containsAlongEdgeLogical(alongLogical)
+        }
+        if hasUser {
+            return .pp
+        } else {
+            // PB: 半開区間規約 ([min,max)) の下では交点座標そのもの (= source display の
+            // maxX/maxY 側境界値ちょうど) は隣接モニタ (paired display) の所属になってしまう
+            // (2026-07-10 コアレビュー C-2)。source display 内側へ 0.25 論理 px 相当だけ引き込んだ
+            // 座標にクランプする。0.25 は Trigger.defaultEdgeEpsilon (0.1) を確実に上回り、
+            // 次の判定サイクルで BX 判定の ε 近傍に戻らない値として選んだ (m-3 と同じ定数を共有)。
+            return .pb(clampTo: inwardClampedPoint(winner.hit, side: winner.seg.side, display: source))
+        }
     }
 
     /// BX 時の判定。(displayId, side, along=current 座標) 位置に userSegment があれば BP、なければ BB。
@@ -71,6 +86,13 @@ public enum Judgement {
         guard let source = tables.display(displayId) else { return .block }
         let along = side.isHorizontal ? point.x : point.y
 
+        // M-1: OS がこの (displayId, side, along) を通す辺として持っているなら、そもそも BX として
+        // ここへ来たこと自体が誤検出 (エッジ ε 近傍の丸め等)。ユーザ判定を行わず block で確定する。
+        let osPassesHere = tables.osSegments.contains { os in
+            os.displayId == displayId && os.side == side && os.containsAlongEdgeLogical(along)
+        }
+        guard !osPassesHere else { return .block }
+
         // 優先度リスト順で最初にヒットする userSegment を採用
         guard let userSrc = tables.userSegments.first(where: { us in
             us.displayId == displayId && us.side == side && us.containsAlongEdgeLogical(along)
@@ -79,7 +101,9 @@ public enum Judgement {
         }
         guard let userDst = tables.userSegment(id: userSrc.pairedSegmentId),
               let pairedDisplay = tables.display(userDst.displayId) else {
-            return .block
+            // m-5: userSegment 自体はあるが paired 参照が解決できない (削除済み segment / 消えた
+            // display 等)。ワープしない点は BB と同じだが、原因を診断情報として区別する。
+            return .blockDanglingReference(pairedSegmentId: userSrc.pairedSegmentId)
         }
 
         // paired display へのワープ先を rate 写像で求める
@@ -97,12 +121,37 @@ public enum Judgement {
         return .pass(warpTo: LogicalPoint(x: raw.x + insetLogical.x, y: raw.y + insetLogical.y))
     }
 
+    /// M-2: カドで複数辺が BX 候補になる場合、優先度順に試し、先頭が block/danglingReference なら
+    /// 次候補を試す (2 段評価)。全候補が非 pass なら先頭候補の結果を返す (診断情報を保つため
+    /// 一律 .block に潰さない)。sides は Trigger.classify が返す優先度順の候補列 (非空)。
+    public static func judgeBlockedWithFallback(
+        at point: LogicalPoint,
+        displayId: String,
+        sides: [Side],
+        tables: WarpTables,
+        inwardInsetMillimeters: Double = 0.001
+    ) -> BXOutcome {
+        precondition(!sides.isEmpty, "judgeBlockedWithFallback: sides は少なくとも 1 件必要")
+        var firstOutcome: BXOutcome?
+        for side in sides {
+            let outcome = judgeBlocked(
+                at: point, displayId: displayId, side: side, tables: tables,
+                inwardInsetMillimeters: inwardInsetMillimeters)
+            if firstOutcome == nil { firstOutcome = outcome }
+            if case .pass = outcome { return outcome }
+        }
+        return firstOutcome ?? .block
+    }
+
     // ================================
     // 交差計算
     // ================================
 
-    /// 線分 line が display の指定 side (エッジ) と交わる点を返す。交わらなければ nil。
-    internal static func intersectLineWithEdge(_ line: LineSegment, display d: Display, side: Side) -> LogicalPoint? {
+    /// 線分 line が display の指定 side (エッジ) と交わる点と、その線分パラメータ t (0...1、
+    /// line.from に近いほど小さい) を返す。交わらなければ nil。
+    internal static func intersectLineWithEdgeParam(
+        _ line: LineSegment, display d: Display, side: Side
+    ) -> (point: LogicalPoint, t: Double)? {
         let from = line.from
         let to = line.to
         switch side {
@@ -113,7 +162,7 @@ public enum Judgement {
             let t = (y - from.y) / (to.y - from.y)
             if t < 0 || t > 1 { return nil }
             let x = from.x + t * (to.x - from.x)
-            return LogicalPoint(x: x, y: y)
+            return (LogicalPoint(x: x, y: y), t)
         case .left, .right:
             let x = d.edgeFixedLogicalCoord(side)
             if (from.x - x) * (to.x - x) > 0 { return nil }
@@ -121,8 +170,19 @@ public enum Judgement {
             let t = (x - from.x) / (to.x - from.x)
             if t < 0 || t > 1 { return nil }
             let y = from.y + t * (to.y - from.y)
-            return LogicalPoint(x: x, y: y)
+            return (LogicalPoint(x: x, y: y), t)
         }
+    }
+
+    /// 点 p を display の指定 side の内側へ、`RateMapping.boundaryInwardInsetLogicalPixels`
+    /// (0.25 論理 px) 相当だけ引き込んだ座標にする (C-2)。0.25 論理 px を display の pose で
+    /// 物理 mm に換算してから `physicalToLogicalInsetVector` に渡すことで、m-3 のクランプ実装と
+    /// 同じ経路 (物理 mm 単位の inset → pose で論理へ戻す) を共有する。
+    internal static func inwardClampedPoint(_ p: LogicalPoint, side: Side, display: Display) -> LogicalPoint {
+        let scaleForFixedAxis = side.isHorizontal ? display.pose.scaleY : display.pose.scaleX
+        let insetMillimeters = RateMapping.boundaryInwardInsetLogicalPixels * scaleForFixedAxis
+        let inset = physicalToLogicalInsetVector(side: side, insetMillimeters: insetMillimeters, pose: display.pose)
+        return LogicalPoint(x: p.x + inset.x, y: p.y + inset.y)
     }
 
     /// 対向モニタ側の「辺の内向き」への物理 (mm) inset を、当該 pose で論理 px 変位に換算する。
