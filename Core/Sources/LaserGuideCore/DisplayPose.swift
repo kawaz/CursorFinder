@@ -17,7 +17,9 @@ public struct DisplayPose: Equatable, Hashable, Sendable {
     public var scaleY: Double
 
     public init(translate: PhysicalPoint, scaleX: Double, scaleY: Double) {
-        precondition(scaleX != 0 && scaleY != 0, "DisplayPose: scale が 0 だと逆変換できない")
+        // scale <= 0 は逆変換不能 (0) または鏡映反転 (負値、モニタ配置として想定外) を許してしまう。
+        // ミラーリング表現は pose の責務外 (DR-0005) なので正値のみ受け付ける (m-4)。
+        precondition(scaleX > 0 && scaleY > 0, "DisplayPose: scale は正の値である必要がある (0 は逆変換不能、負値は反転を意味してしまう)")
         self.translate = translate
         self.scaleX = scaleX
         self.scaleY = scaleY
