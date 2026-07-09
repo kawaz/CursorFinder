@@ -13,7 +13,7 @@ import AppKit
 import Foundation
 import LaserGuideCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, EffectInterpreter {
 
     private var runtime: AppRuntime!
     private var tap: EventTapController?
@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
     private var overlayModelById: [String: OverlayViewModel] = [:]
 
     private var statusItem: NSStatusItem?
+    private var warpToggleItem: NSMenuItem?
+    private var latencyInfoItem: NSMenuItem?
     private var warpEnabled: Bool = true
 
     // MARK: - NSApplicationDelegate
@@ -190,14 +192,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "LG"
         let menu = NSMenu()
-        let warpToggle = NSMenuItem(title: "Warp: on", action: #selector(toggleWarp), keyEquivalent: "w")
+        menu.delegate = self
+        // 境界ワープのトグル: レーザー描画とは独立の機能なので、on/off はチェックマーク
+        // (macOS 標準のトグル表現) で示す。レーザーは常時描画。
+        let warpToggle = NSMenuItem(title: "境界ワープ", action: #selector(toggleWarp), keyEquivalent: "w")
         warpToggle.target = self
+        warpToggle.state = warpEnabled ? .on : .off
         menu.addItem(warpToggle)
-        // #5 レイテンシ dump: 現在のサンプル集計を NSLog に出す。実マウス操作の後に kawaz が
-        //   選ぶ運用 (自動計測が難しいため runbook に手順を追記)。
-        let latencyDump = NSMenuItem(title: "Dump tap latency", action: #selector(dumpLatency), keyEquivalent: "l")
-        latencyDump.target = self
-        menu.addItem(latencyDump)
+        self.warpToggleItem = warpToggle
+        menu.addItem(.separator())
+        // tap レイテンシ統計: メニューを開くたびに menuWillOpen で最新値へ更新する表示専用行。
+        let latencyInfo = NSMenuItem(title: "tap レイテンシ: 計測待ち (マウスを動かして)", action: nil, keyEquivalent: "")
+        latencyInfo.isEnabled = false
+        menu.addItem(latencyInfo)
+        self.latencyInfoItem = latencyInfo
+        let latencyCopy = NSMenuItem(title: "レイテンシ統計をコピー", action: #selector(copyLatency), keyEquivalent: "l")
+        latencyCopy.target = self
+        menu.addItem(latencyCopy)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit LaserGuide (dev)", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -208,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
 
     @objc private func toggleWarp(_ sender: NSMenuItem) {
         warpEnabled.toggle()
-        sender.title = warpEnabled ? "Warp: on" : "Warp: off"
+        sender.state = warpEnabled ? .on : .off
         if warpEnabled {
             _ = tap?.start()
         } else {
@@ -216,16 +227,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
         }
     }
 
-    @objc private func dumpLatency() {
-        guard let summary = tap?.latency.summary() else {
-            NSLog("[LaserGuide] no latency samples yet (move the mouse first)")
-            return
-        }
-        NSLog("[LaserGuide] %@", summary.oneLineDescription)
+    @objc private func copyLatency() {
+        let text = tap?.latency.summary()?.oneLineDescription
+            ?? "no latency samples yet (move the mouse first)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - NSMenuDelegate
+
+    func menuWillOpen(_ menu: NSMenu) {
+        if let summary = tap?.latency.summary() {
+            latencyInfoItem?.title = "tap レイテンシ: \(summary.oneLineDescription)"
+        } else {
+            latencyInfoItem?.title = "tap レイテンシ: 計測待ち (マウスを動かして)"
+        }
     }
 
     // MARK: - EffectInterpreter

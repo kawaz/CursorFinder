@@ -34,17 +34,17 @@ swift run laserguide-dev
 
 | メニュー項目 | 挙動 |
 |---|---|
-| Warp: on / off | CGEventTap の有効/無効トグル。off でもレーザー描画は継続 |
-| Dump tap latency | tap callback の reduce 所要時間集計 (n / p50 / p95 / p99 / max) を NSLog に出力 |
+| 境界ワープ (チェックマーク) | 仮想境界ワープ (CGEventTap) の有効/無効トグル。レーザー描画は独立で常時 on |
+| tap レイテンシ: ... (表示専用) | メニューを開くたびに最新の集計 (n / p50 / p95 / p99 / max) へ更新される |
+| レイテンシ統計をコピー | 上記の一行をクリップボードへコピー |
 | Quit LaserGuide (dev) | 終了 |
 
 ### tap latency の計測手順 (#5 検証用)
 
-1. `Console.app` を起動し、プロセス `laserguide-dev` の NSLog を tail する
-   (`Console.app` の検索欄に `laserguide` を入力)
+1. (Console.app は不要になった。メニュー表示で足りる)
 2. マウスを 10 秒程度連続で動かす (画面端に押し付けたり継ぎ目跨ぎしたりを含める)
-3. メニューバー `LG → Dump tap latency` を選ぶ
-4. `[latency] n=... p50=... p95=... p99=... max=...` の一行が出力される
+3. メニューバー `LG` を開くと「tap レイテンシ: ...」行に最新集計が表示される
+4. 記録したい場合は「レイテンシ統計をコピー」でクリップボードから貼り付ける
 5. 修正効果の測定は「実マウス操作が必要」なため CI 自動化不可 (kawaz の実機確認待ち)
 
 ## 動作確認観点
