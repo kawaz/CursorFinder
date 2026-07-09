@@ -40,9 +40,30 @@ public enum LaserGeometry {
     public static let defaultCornerHalfWidth: CGFloat = 8.0
     /// ポインタ手前の頂点辺半幅 (px)。v1 と同値。
     public static let defaultTipHalfWidth: CGFloat = 0.5
-    /// ポインタ手前で止めるオフセット (px)。値 > 0 でポインタに触れない三角形になる。
-    /// 2026-07-10 フィードバック #3 で新設。設定可能な定数として公開する。
-    public static let defaultStandoffDistance: CGFloat = 40.0
+
+    /// standoff (ポインタ手前で止めるオフセット) を「角→ポインタ距離の何 % 引いた位置を頂点にするか」
+    /// の比率で決める。頂点は距離の (1 - defaultStandoffRatio) = 90% の位置になる。
+    /// 2026-07-10 第 2 ラウンド フィードバック #3: 固定 40px だと極端に短い/長いレーザーで
+    /// 見た目のバランスが崩れる (短いと標準に対して比率が大きすぎる、長いと相対的に小さすぎる) ため
+    /// 距離に比例させる。ただし比例のみだと退化するので min/max で px クランプする。
+    public static let defaultStandoffRatio: CGFloat = 0.1
+    /// standoff の下限 (px)。距離が短いレーザーでも標準が潰れないようにする。
+    public static let minStandoffDistance: CGFloat = 8.0
+    /// standoff の上限 (px)。距離が長いレーザーで standoff が過大にならないようにする。
+    public static let maxStandoffDistance: CGFloat = 200.0
+
+    /// corner→target の距離から実際に使う standoff (px) を、比率 + min/max クランプで求める。
+    /// `taperApexPoint(standoff:)` 自体は「与えられた standoff 距離だけ手前に戻す」純粋な幾何計算の
+    /// ままにし (既存呼び出し・既存テストの意味を変えない)、standoff の値そのものをどう決めるかを
+    /// この関数に分離する。
+    public static func standoffDistance(
+        cornerToTargetDistance distance: CGFloat,
+        ratio: CGFloat = defaultStandoffRatio,
+        min minStandoff: CGFloat = minStandoffDistance,
+        max maxStandoff: CGFloat = maxStandoffDistance
+    ) -> CGFloat {
+        Swift.min(Swift.max(distance * ratio, minStandoff), maxStandoff)
+    }
 
     /// 自ディスプレイの 4 隅 (CG global 論理座標)。
     /// 2026-07-10 フィードバック #1: 描画は自ディスプレイの 4 隅からのみ。

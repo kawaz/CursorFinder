@@ -45,10 +45,13 @@ struct LaserOverlayView: View {
     }
 
     private func drawLaser(context: GraphicsContext, from corner: CGPoint, to pointer: CGPoint) {
-        // #3 ポインタ手前で止めるテーパー: standoff 距離だけ手前に頂点を戻す。
-        //   ポインタが角に極端に近いと描画不能 (nil)。
-        guard let apex = LaserGeometry.taperApexPoint(
-            from: corner, to: pointer, standoff: LaserGeometry.defaultStandoffDistance)
+        // #3 ポインタ手前で止めるテーパー: standoff は角→ポインタ距離の比率 (+ min/max クランプ) で
+        //   決める (2026-07-10 第 2 ラウンド、固定 40px から変更)。ポインタが角に極端に近いと描画不能 (nil)。
+        let dx = pointer.x - corner.x
+        let dy = pointer.y - corner.y
+        let distance = (dx * dx + dy * dy).squareRoot()
+        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: distance)
+        guard let apex = LaserGeometry.taperApexPoint(from: corner, to: pointer, standoff: standoff)
         else { return }
 
         let s = SIMD2<Float>(Float(corner.x), Float(corner.y))
