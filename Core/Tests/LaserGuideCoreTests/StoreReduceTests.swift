@@ -360,4 +360,86 @@ final class StoreReduceTests: XCTestCase {
         XCTAssertNotEqual(committed.tables, confirmedTablesBefore, "commit で初めて確定済み tables が候補 pose を反映する")
         XCTAssertEqual(committed.calibration, .idle, "commit 後はキャリブレーション編集状態がクリアされる")
     }
+
+    // ==================
+    // DR-0006 決定 5: 初期状態は osPassSegments のコピー
+    // (2026-07-10 実機フィードバック #4 の確定原因: AppState(displays:, userSegments: []) が
+    //  全継ぎ目を PB 化させ、OS のネイティブ通過を能動的にブロックしていた)
+    // ==================
+
+    /// AppState.initial(displays:) は userSegments を空にせず osPassSegments のコピーで
+    /// 初期化する。よって起動直後にモニタ間の継ぎ目を横切っても PP (OS の通過通り) になり、
+    /// rewriteEventLocation (PB のクランプ差し戻し) effect は出ない。
+    func testInitialAppStateDefaultsUserSegmentsToOSCopySoFreshBoundaryCrossingIsPP() {
+        let displays = [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+            Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity),
+        ]
+        var state = AppState.initial(displays: displays)
+        XCTAssertFalse(state.userSegments.isEmpty, "初期状態の userSegments は空であってはいけない (空だと全継ぎ目が PB 化する)")
+
+        (state, _) = Store.reduce(state, .mouseMoved(location: LogicalPoint(x: 1900, y: 500), deltaSign: DeltaSign(dx: 1, dy: 0)))
+        let (next, effects) = Store.reduce(
+            state, .mouseMoved(location: LogicalPoint(x: 1940, y: 500), deltaSign: DeltaSign(dx: 1, dy: 0)))
+        XCTAssertEqual(effects, [], "初期状態のままの継ぎ目越境は PP (OS 通過通り)、rewriteEventLocation は出ない")
+        XCTAssertEqual(next.currentMouse?.displayId, "B", "PP なので OS の通過通り B へ移った履歴になる")
+    }
+
+    /// 実機トポロジ (findings/2026-07-09-macos-display-api-verification.md §4): 内蔵 Retina
+    /// bounds 0..2056 × 0..1329 (下) と LG ULTRAGEAR+ bounds -258..3182 × -1440..0 (上) が
+    /// y=0 の継ぎ目で上下に隣接する構成。継ぎ目共通区間 [0,2056] の中央 (x=1000) を縦断しても、
+    /// 初期状態のままなら OS のネイティブ通過がブロックされず素通しになることを固定する
+    /// (#4 の実機症状「継ぎ目の真ん中で詰まるが角沿いは通れる」の再現条件そのもの)。
+    func testInitialAppStateAllowsPassThroughAtSeamCenterOnRealTopology() {
+        let builtIn = Display(id: "built-in", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 2056, maxY: 1329), pose: .identity)
+        let lg = Display(id: "LG", logicalBounds: LogicalRect(minX: -258, minY: -1440, maxX: 3182, maxY: 0), pose: .identity)
+        var state = AppState.initial(displays: [builtIn, lg])
+
+        // built-in 内部 (継ぎ目のすぐ下、x=1000 は共通区間 [0,2056] の中央付近)
+        (state, _) = Store.reduce(state, .mouseMoved(location: LogicalPoint(x: 1000, y: 1), deltaSign: DeltaSign(dx: 0, dy: -1)))
+        XCTAssertEqual(state.currentMouse?.displayId, "built-in")
+
+        // 継ぎ目 (y=0) を上向き (LG 方向) に横断
+        let (next, effects) = Store.reduce(
+            state, .mouseMoved(location: LogicalPoint(x: 1000, y: -1), deltaSign: DeltaSign(dx: 0, dy: -1)))
+        XCTAssertEqual(effects, [], "継ぎ目中央の縦断は初期状態のままなら PP、詰まらず素通しになる")
+        XCTAssertEqual(next.currentMouse?.displayId, "LG", "越境後の履歴は LG に移っている")
+    }
+
+    /// displayConfigurationChanged で「まったく新規」のモニタが検出された場合も、決定 5 の
+    /// 対象 (= 永続設定が無い新規構成の検出時) として osPassSegments のコピーが userSegments に
+    /// 追加され、直後の越境が PP になる。一方、既存モニタ同士の隣接には手を出さず、ユーザが
+    /// 既に編集した (PB へ倒した) 可能性のある userSegments を構成変更のたびに上書きしない
+    /// ことも併せて固定する。
+    func testDisplayConfigurationChangedAddsOSCopyOnlyForNewlyAppearedDisplays() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        // 初期状態: A 単体、userSegments は当然空 (隣接なし)
+        var state = AppState.initial(displays: [a])
+        XCTAssertEqual(state.userSegments, [], "隣接モニタがなければ osPassSegments は空")
+
+        // 既存 A に、A の右辺へ既にユーザが明示的に PB 化した想定の隣接構成へ更新する準備として、
+        // まず B を新規追加 (新規検出 → os コピーが自動追加される想定)。
+        let (afterAddB, _) = Store.reduce(state, .displayConfigurationChanged([
+            DisplaySnapshot(id: "A", logicalBounds: a.logicalBounds),
+            DisplaySnapshot(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080)),
+        ]))
+        XCTAssertTrue(
+            afterAddB.userSegments.contains { $0.displayId == "A" && $0.side == .right },
+            "新規検出された B との隣接は os コピーとして userSegments に自動追加される")
+        state = afterAddB
+
+        // ユーザが A-B 間を明示的に PB 化 (userSegments から A.right 側を削除) した状態を模擬。
+        state.userSegments.removeAll { $0.displayId == "A" && $0.side == .right || $0.displayId == "B" && $0.side == .left }
+        XCTAssertFalse(state.userSegments.contains { $0.displayId == "A" && $0.side == .right })
+
+        // 同じ構成のまま displayConfigurationChanged が再度発火しても (A/B とも既存 id なので)
+        // 削除した PB 化が自動で復活しない (= ユーザの明示編集を上書きしない)。
+        let (afterNoOpReconfig, _) = Store.reduce(state, .displayConfigurationChanged([
+            DisplaySnapshot(id: "A", logicalBounds: a.logicalBounds),
+            DisplaySnapshot(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080)),
+        ]))
+        XCTAssertFalse(
+            afterNoOpReconfig.userSegments.contains { $0.displayId == "A" && $0.side == .right },
+            "既存モニタ同士の再構成では、ユーザが明示削除した userSegments を自動で復活させない")
+    }
 }

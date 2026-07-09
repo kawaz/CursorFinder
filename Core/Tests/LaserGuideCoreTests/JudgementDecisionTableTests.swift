@@ -264,4 +264,85 @@ final class JudgementDecisionTableTests: XCTestCase {
             XCTFail("expected .pass, got \(outcome)")
         }
     }
+
+    // ==================
+    // PB 縦方向 (top/bottom) の inset 符号検証
+    // (2026-07-10 第 2 ラウンド b: 実機で「移動先モニタ側に少しはみ出た位置に留まる」観測があり、
+    //  inwardClampedPoint の top/bottom inset 符号が source の外側を向いている疑いが出た。
+    //  既存の PB テストは left/right (垂直エッジ) のみだったため、水平エッジでも符号を固定する。)
+    // ==================
+
+    /// 内蔵 (下、id "Down") の top エッジ (minY=0) に Up (id "Up") が接触する縦構成。
+    /// x=500 で PB (Up 側のユーザセグメントが x∈[0,300] にしかない) → clampTo は
+    /// source (Down) の内側、つまり y = minY + 0.25 (+y 方向、Down の内部は y が大きい方) になる。
+    /// これが逆符号 (-y、Up 側へはみ出す方向) なら bug。
+    func testPB_TopEdgeVertical_ClampsInwardTowardSourceInterior() {
+        let down = Display(id: "Down", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let up = Display(id: "Up", logicalBounds: LogicalRect(minX: 0, minY: -1080, maxX: 1920, maxY: 0), pose: .identity)
+        let users: [PassSegment] = [
+            PassSegment(id: "u-Down", displayId: "Down", side: .top, logicalStart: 0, logicalEnd: 300, pairedSegmentId: "u-Up"),
+            PassSegment(id: "u-Up", displayId: "Up", side: .bottom, logicalStart: 0, logicalEnd: 300, pairedSegmentId: "u-Down"),
+        ]
+        let tables = WarpTables(displays: [down, up], userSegments: users)
+        // Down 内部 (y=20) から Up 方向 (y 減少) へ x=500 で継ぎ目 (y=0) を越境
+        let line = LineSegment(from: LogicalPoint(x: 500, y: 20), to: LogicalPoint(x: 500, y: -20))
+        let j = Judgement.judgeCrossing(line: line, sourceDisplayId: "Down", tables: tables)
+        guard case let .pb(clamp) = j else {
+            return XCTFail("expected .pb (x=500 は user 範囲外), got \(j)")
+        }
+        XCTAssertEqual(clamp.x, 500, accuracy: 1e-9, "along (x) は交点のまま変わらない")
+        XCTAssertEqual(clamp.y, 0 + 0.25, accuracy: 1e-9, "top エッジの内向きは +y (Down の内部は y が大きい方)")
+        XCTAssertTrue(clamp.y > 0, "はみ出さず Down (y>=0) 側に留まっていること")
+        XCTAssertEqual(tables.displayId(containing: clamp), "Down", "クランプ後の座標は source (Down) に所属すること")
+    }
+
+    /// SourceB (上、id "SourceB") の bottom エッジ (maxY=1080) に Below (id "Below") が接触する
+    /// 縦構成。x=500 で PB → clampTo は source (SourceB) の内側、つまり y = maxY − 0.25
+    /// (-y 方向、SourceB の内部は y が小さい方) になる。逆符号なら bug。
+    func testPB_BottomEdgeVertical_ClampsInwardTowardSourceInterior() {
+        let sourceB = Display(id: "SourceB", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        let below = Display(id: "Below", logicalBounds: LogicalRect(minX: 0, minY: 1080, maxX: 1920, maxY: 2160), pose: .identity)
+        let users: [PassSegment] = [
+            PassSegment(id: "u-SourceB", displayId: "SourceB", side: .bottom, logicalStart: 0, logicalEnd: 300, pairedSegmentId: "u-Below"),
+            PassSegment(id: "u-Below", displayId: "Below", side: .top, logicalStart: 0, logicalEnd: 300, pairedSegmentId: "u-SourceB"),
+        ]
+        let tables = WarpTables(displays: [sourceB, below], userSegments: users)
+        // SourceB 内部 (y=1060) から Below 方向 (y 増加) へ x=500 で継ぎ目 (y=1080) を越境
+        let line = LineSegment(from: LogicalPoint(x: 500, y: 1060), to: LogicalPoint(x: 500, y: 1100))
+        let j = Judgement.judgeCrossing(line: line, sourceDisplayId: "SourceB", tables: tables)
+        guard case let .pb(clamp) = j else {
+            return XCTFail("expected .pb (x=500 は user 範囲外), got \(j)")
+        }
+        XCTAssertEqual(clamp.x, 500, accuracy: 1e-9, "along (x) は交点のまま変わらない")
+        XCTAssertEqual(clamp.y, 1080 - 0.25, accuracy: 1e-9, "bottom エッジの内向きは -y (SourceB の内部は y が小さい方)")
+        XCTAssertTrue(clamp.y < 1080, "はみ出さず SourceB (y<1080) 側に留まっていること")
+        XCTAssertEqual(tables.displayId(containing: clamp), "SourceB", "クランプ後の座標は source (SourceB) に所属すること")
+    }
+
+    /// BP (仮想接続ワープ) の縦方向 inset も同じ物理→論理変換関数 (physicalToLogicalInsetVector) を
+    /// 共有しているため、min 側 (top) 着地でも符号を固定しておく (実機症状「移動先モニタ側に少し
+    /// はみ出る」の疑いの本命は着地側のこの経路)。paired (D) の top エッジ (minY=5000) へ着地 →
+    /// inset は +y (D の内部方向)、はみ出す方向 (-y、エッジより外) になっていないことを固定する。
+    func testBP_InwardInsetVertical_TopSide_PushesWarpDestinationInsidePairedDisplay() {
+        let a = Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity)
+        // D の scaleY = 0.5 mm/px → inset 1mm は 2px 相当
+        let d = Display(id: "D", logicalBounds: LogicalRect(minX: 0, minY: 5000, maxX: 1920, maxY: 6080),
+                        pose: DisplayPose(translate: PhysicalPoint(x: 0, y: 0), scaleX: 0.5, scaleY: 0.5))
+        let users = [
+            PassSegment(id: "u-A", displayId: "A", side: .bottom, logicalStart: 0, logicalEnd: 1920, pairedSegmentId: "u-D"),
+            PassSegment(id: "u-D", displayId: "D", side: .top, logicalStart: 0, logicalEnd: 1920, pairedSegmentId: "u-A"),
+        ]
+        let tables = WarpTables(displays: [a, d], userSegments: users)
+        let outcome = Judgement.judgeBlocked(
+            at: LogicalPoint(x: 500, y: 1080),
+            displayId: "A", side: .bottom,
+            tables: tables,
+            inwardInsetMillimeters: 1.0)
+        if case let .pass(dst) = outcome {
+            XCTAssertEqual(dst.y, 5000 + 2, accuracy: 1e-9, "top 着地は +y (D の内側) へ 2px、D の外へはみ出していない")
+            XCTAssertTrue(dst.y > 5000, "D (y>=5000) の内側に留まっていること")
+        } else {
+            XCTFail("expected .pass, got \(outcome)")
+        }
+    }
 }

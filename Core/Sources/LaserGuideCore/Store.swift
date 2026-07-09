@@ -103,13 +103,41 @@ public enum Store {
         // 既知の id には従来の pose を引き継ぐ (キャリブレーション情報は OS から来ないため)。
         // 新規検出モニタは未校正状態として恒等 pose を仮置きする (Phase 2 でのフォールバック
         // DPI 推定に置き換わる想定、DR-0005)。
+        let existingIds = Set(state.displays.map(\.id))
         let newDisplays = snapshots.map { snapshot -> Display in
             if let existing = state.displays.first(where: { $0.id == snapshot.id }) {
                 return Display(id: snapshot.id, logicalBounds: snapshot.logicalBounds, pose: existing.pose)
             }
             return Display(id: snapshot.id, logicalBounds: snapshot.logicalBounds, pose: .identity)
         }
+
+        // DR-0006 決定 5: 「永続設定が無い新規構成の検出時」も osPassSegments のコピーで
+        // userSegments を初期化する対象に含める。ここでは「今回新たに現れたモニタ (id が
+        // 既存 displays に無かった) が絡む隣接ペア」を追加対象にする。既存モニタ同士の隣接は、
+        // ユーザが既に見た構成 (PB へ明示的に倒した可能性を含む) なので自動追加で上書きしない
+        // (= 決定 5 の「PB はユーザが明示的にセグメントを削除した時にのみ生じる」という不変条件
+        // を、構成変更のたびに壊さないため)。
+        //
+        // 隣接ペアは必ず 2 個のセグメント (a→b, b→a) が組で生成される。片方だけを条件判定すると、
+        // 「新規モニタ側の 1 セグメントだけ追加され、既存モニタ側の対セグメントが漏れる」非対称な
+        // 状態になり、A→B は PP なのに B→A は PB という向きで挙動が割れてしまう。ペアのどちらか
+        // 一方でも新規モニタが絡んでいれば両方を追加する。
+        let newlyAppearedIds = Set(newDisplays.map(\.id)).subtracting(existingIds)
+        var nextUserSegments = state.userSegments
+        if !newlyAppearedIds.isEmpty {
+            let allOSSegments = Adjacency.detectOSPassSegments(newDisplays)
+            let osSegmentsById = Dictionary(uniqueKeysWithValues: allOSSegments.map { ($0.id, $0) })
+            let existingUserSegmentIds = Set(nextUserSegments.map(\.id))
+            let osSegmentsInvolvingNewDisplays = allOSSegments.filter { seg in
+                guard !existingUserSegmentIds.contains(seg.id) else { return false }
+                let pairedInvolvesNew = osSegmentsById[seg.pairedSegmentId].map { newlyAppearedIds.contains($0.displayId) } ?? false
+                return newlyAppearedIds.contains(seg.displayId) || pairedInvolvesNew
+            }
+            nextUserSegments.append(contentsOf: osSegmentsInvolvingNewDisplays)
+        }
+
         var next = state
+        next.userSegments = nextUserSegments
         next.replaceDisplaysAndRebuildTables(newDisplays)
         return (next, [])
     }

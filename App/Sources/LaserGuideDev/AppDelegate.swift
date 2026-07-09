@@ -39,7 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
             let pose = scan.initialPoses[snap.id] ?? .identity
             return Display(id: snap.id, logicalBounds: snap.logicalBounds, pose: pose)
         }
-        let initial = AppState(displays: displays, userSegments: [])
+        // DR-0006 決定 5: 永続設定がまだ無い新規構成なので、userSegments は osPassSegments の
+        // コピーで初期化する (= userSegments: [] だと全継ぎ目が PB になり OS のネイティブ通過を
+        // 能動的にブロックしてしまう。2026-07-10 実機フィードバック #4 の確定原因)。
+        let initial = AppState.initial(displays: displays)
         runtime = AppRuntime(initial: initial)
         runtime.setInterpreter(self)
         runtime.stateDidChange = { [weak self] state in

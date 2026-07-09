@@ -139,4 +139,13 @@ public struct AppState: Equatable, Sendable {
         displays = newDisplays
         tables = WarpTables(displays: newDisplays, userSegments: userSegments)
     }
+
+    /// 永続設定がまだ無い新規構成の初期状態を作る (DR-0006 決定 5)。userSegments を空集合で
+    /// 初期化すると全継ぎ目が「os あり・user なし = PB」になり、アプリが OS のネイティブ通過を
+    /// 能動的にブロックしてしまう (2026-07-10 実機で発現: 継ぎ目の真ん中で詰まるが角沿いだけ
+    /// 通れる、という症状で観測された)。デフォルトは「OS の挙動を変えない」= osPassSegments の
+    /// コピーで userSegments を初期化する。
+    public static func initial(displays: [Display]) -> AppState {
+        AppState(displays: displays, userSegments: Adjacency.detectOSPassSegments(displays))
+    }
 }
