@@ -84,12 +84,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EffectInterpreter {
 
     /// tap eventsOfInterest から除外したドラッグ系イベントの位置更新だけを購読する。
     /// NSEvent.mouseLocation は y-up (bottom-left) なので main NSScreen 高さで CG y-down に変換。
+    ///
+    /// 2026-07-10 第 2 ラウンド #5: レーザーが非表示 (アイドルフェード後、isMouseActive == false)
+    /// の間は追跡そのものをスキップする。目的は「既に見えているレーザーがドラッグ中も座標に
+    /// 追従し続け、ドラッグ終了時に古い位置へジャンプしないこと」であり、非表示中に始まった
+    /// ドラッグ (= ウィンドウ移動等、レーザーと無関係な操作である可能性が高い) まで毎イベント
+    /// CG 変換 + overlay 走査を行う必要はない。OverlayViewModel 側の 60Hz coalesce と合わせて
+    /// 二重にコストを削る。
     private func startDragPositionMonitor() {
         stopDragPositionMonitor()
         dragPositionMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] _ in
             guard let self else { return }
+            guard self.overlayModelById.values.contains(where: { $0.isMouseActive }) else { return }
             let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
             let p = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
             for (_, vm) in self.overlayModelById { vm.apply(mouseLocation: p) }

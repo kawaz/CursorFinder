@@ -11,6 +11,14 @@
 // 2026-07-10 フィードバック #2 (アイドルフェード):
 //   ポインタ移動が停止したら inactivityThreshold 経過後にレーザーを非表示にする
 //   (v1 の debounce 0.3s と同等)。位置変化時のみ debounce をリセットして再表示。
+//
+// 2026-07-10 第 2 ラウンド フィードバック #5 (描画更新の 60Hz 合流):
+//   tap 経由 (apply(state:)) も drag monitor 経由 (apply(mouseLocation:)) も、OS のイベント
+//   レポートレートに比例した高頻度で呼ばれうる。毎回 @Published を発火すると SwiftUI の
+//   再評価コストがイベントレートに比例して積み重なり、ドラッグ操作の体感が重くなる
+//   (kawaz 実機報告: レーザー非表示中でもドラッグが重かった → @Published の発火自体が
+//   コストの主因という仮説)。両経路とも「最新値を保持するだけ」の軽い代入にとどめ、
+//   実際の @Published 反映は 16ms (60Hz) ごとの coalesce タイマーでまとめて行う。
 import Foundation
 import AppKit
 import Combine
@@ -26,7 +34,13 @@ public final class OverlayViewModel: ObservableObject {
     /// ポインタ移動停止からレーザーを消すまでの猶予 (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
     public var inactivityThreshold: TimeInterval = 0.3
 
+    /// coalesce タイマーの周期 (60Hz = 約16.67ms)。テストで注入できるよう var にしておく。
+    public var flushInterval: TimeInterval = 1.0 / 60.0
+
     private var inactivityWorkItem: DispatchWorkItem?
+    private var pendingState: AppState?
+    private var pendingMouseLocation: LogicalPoint?
+    private var flushTimer: Timer?
 
     public init(initialState: AppState, initialMouse: LogicalPoint? = nil) {
         self.state = initialState
@@ -34,6 +48,40 @@ public final class OverlayViewModel: ObservableObject {
     }
 
     public func apply(state: AppState) {
+        pendingState = state
+        scheduleFlush()
+    }
+
+    public func apply(mouseLocation: LogicalPoint) {
+        pendingMouseLocation = mouseLocation
+        scheduleFlush()
+    }
+
+    private func scheduleFlush() {
+        guard flushTimer == nil else { return }
+        let timer = Timer(timeInterval: flushInterval, repeats: false) { [weak self] _ in
+            self?.flush()
+        }
+        flushTimer = timer
+        // .common: ウィンドウドラッグ等 (.eventTracking モード) の main run loop 中でもタイマーが
+        // 発火するようにする。.default だけだとドラッグ中はタイマーが止まり、coalesce のつもりが
+        // 「ドラッグ終了までまとめて 1 回」に化けて元の問題 (ドラッグ中に追従しない) が再発する。
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func flush() {
+        flushTimer = nil
+        if let s = pendingState {
+            pendingState = nil
+            applyStateImmediately(s)
+        }
+        if let loc = pendingMouseLocation {
+            pendingMouseLocation = nil
+            applyMouseLocationImmediately(loc)
+        }
+    }
+
+    private func applyStateImmediately(_ state: AppState) {
         self.state = state
         // state 更新は mouseMoved 以外 (displayConfigurationChanged / calibration / settings) でも
         // 呼ばれるため、位置が実際に変わった時のみ activity として扱う。
@@ -45,7 +93,7 @@ public final class OverlayViewModel: ObservableObject {
         }
     }
 
-    public func apply(mouseLocation: LogicalPoint) {
+    private func applyMouseLocationImmediately(_ mouseLocation: LogicalPoint) {
         if mouseLocation != currentMouseLocation {
             currentMouseLocation = mouseLocation
             markActive()
