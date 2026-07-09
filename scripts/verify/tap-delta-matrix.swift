@@ -59,7 +59,8 @@ func eventCallback(
 }
 
 print("=== CGEventTap delta マトリクス検証 (DR-0006) ===")
-print("10 秒間 mouseMoved イベントを記録します。マウスを動かし、特に画面端に押し付けてください。\n")
+let durationSec = CommandLine.arguments.count > 1 ? (Double(CommandLine.arguments[1]) ?? 30.0) : 30.0
+print("\(Int(durationSec)) 秒間 mouseMoved イベントを記録します (秒数は第1引数で指定可)。マウスを動かし、特に画面端に押し付けてください。\n")
 
 guard let eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap,
@@ -78,7 +79,7 @@ let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap,
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
 CGEvent.tapEnable(tap: eventTap, enable: true)
 
-let deadline = Date().addingTimeInterval(10.0)
+let deadline = Date().addingTimeInterval(durationSec)
 while Date() < deadline {
     CFRunLoopRunInMode(.defaultMode, 0.1, true)
 }
