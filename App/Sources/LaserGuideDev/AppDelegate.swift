@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private var latencyInfoItem: NSMenuItem?
     private var warpEnabled: Bool = true
 
+    /// DR-0008: WKWebView キャリブレーション UI。メニューから開いたときに生成、閉じたら再生成。
+    private var calibration: CalibrationWindowController?
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -49,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         runtime.setInterpreter(self)
         runtime.stateDidChange = { [weak self] state in
             self?.dispatchStateToOverlays(state)
+            // DR-0008: キャリブレーション UI を開いているときは RenderModel を追加で push。
+            // CalibrationWindowController 側で 60Hz coalesce するので毎 action で呼んで良い。
+            self?.calibration?.apply(state: state)
         }
 
         setupOverlays(for: scan)
@@ -201,6 +207,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         menu.addItem(warpToggle)
         self.warpToggleItem = warpToggle
         menu.addItem(.separator())
+        // DR-0008: キャリブレーション画面を開く
+        let calibItem = NSMenuItem(title: "キャリブレーション...", action: #selector(openCalibration), keyEquivalent: "k")
+        calibItem.target = self
+        menu.addItem(calibItem)
+        menu.addItem(.separator())
         // tap レイテンシ統計: メニューを開くたびに menuWillOpen で最新値へ更新する表示専用行。
         let latencyInfo = NSMenuItem(title: "tap レイテンシ: 計測待ち (マウスを動かして)", action: nil, keyEquivalent: "")
         latencyInfo.isEnabled = false
@@ -232,6 +243,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
             ?? "no latency samples yet (move the mouse first)"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func openCalibration() {
+        if calibration == nil {
+            calibration = CalibrationWindowController(runtime: runtime)
+        }
+        calibration?.show()
+        // 初回表示時に現在の state で JS 側の boot を助ける (WebView 読み込み完了後の
+        // requestInitialRender でも同じ経路が走るが、こちらは冗長性のため)。
+        calibration?.apply(state: runtime.state)
     }
 
     @objc private func quit() {

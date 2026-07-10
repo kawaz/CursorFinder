@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LaserGuide キャリブレーション</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e; color: #eee;
+      display: flex; flex-direction: column;
+    }
+    header {
+      padding: 0.75rem 1rem; background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 500; }
+    #status { flex: 1; text-align: right; font-size: 0.85rem; color: #8ac; }
+    main {
+      flex: 1; display: flex; padding: 0.75rem;
+      gap: 0.75rem; min-height: 0;
+    }
+    .canvas-container {
+      flex: 1; background: #0f0f23;
+      border-radius: 8px; overflow: hidden; position: relative;
+    }
+    #canvas { width: 100%; height: 100%; display: block; cursor: default; }
+    #canvas.dragging { cursor: grabbing; }
+    .sidebar {
+      width: 280px; background: #16213e;
+      border-radius: 8px; padding: 0.75rem;
+      display: flex; flex-direction: column; gap: 0.75rem;
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      font-size: 0.85rem; color: #aaa;
+      border-bottom: 1px solid #0f3460;
+      padding-bottom: 0.25rem;
+    }
+    .btn {
+      padding: 0.5rem 0.75rem; border: none; border-radius: 4px;
+      cursor: pointer; font-size: 0.85rem;
+    }
+    .btn-primary { background: #e94560; color: white; }
+    .btn-primary:hover { background: #ff6b6b; }
+    .btn-secondary { background: #0f3460; color: #eee; }
+    .btn-secondary:hover { background: #1a4a7a; }
+    .btn-row { display: flex; gap: 0.5rem; }
+    .btn-row .btn { flex: 1; }
+    .monitor-item {
+      background: #0f3460; border-radius: 4px;
+      padding: 0.5rem; margin-bottom: 0.25rem;
+      font-size: 0.85rem;
+    }
+    .monitor-item.dragging { border: 1px solid #4a9fff; }
+    .monitor-item .name { font-weight: 500; margin-bottom: 0.2rem; }
+    .monitor-item .info { font-size: 0.75rem; color: #aaa; line-height: 1.4; }
+    .segment-summary {
+      font-size: 0.75rem; color: #aaa; line-height: 1.4;
+    }
+    .segment-summary .badge {
+      display: inline-block; padding: 0.05rem 0.35rem;
+      border-radius: 3px; font-weight: 600;
+      background: #4a9fff; color: white; margin-right: 0.35rem;
+    }
+    .segment-summary .badge.pb { background: #e94560; }
+    .segment-summary .badge.bp { background: #f0a020; }
+    .segment-summary .badge.bb { background: #444; }
+    textarea {
+      background: #0f0f23; color: #eee;
+      border: 1px solid #0f3460; border-radius: 4px;
+      padding: 0.5rem; font-family: ui-monospace, monospace;
+      font-size: 0.75rem; resize: vertical;
+    }
+    .hint { font-size: 0.75rem; color: #789; padding: 0.25rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LaserGuide キャリブレーション</h1>
+    <span id="status">初期化中...</span>
+  </header>
+  <main>
+    <div class="canvas-container">
+      <canvas id="canvas"></canvas>
+    </div>
+    <aside class="sidebar">
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-commit">確定</button>
+        <button class="btn btn-secondary" id="btn-cancel">取り消し</button>
+      </div>
+      <div class="hint">モニタをドラッグして物理位置を調整。確定で保存。</div>
+      <h2>モニタ</h2>
+      <div id="monitor-list"></div>
+      <h2>セグメント (表示のみ)</h2>
+      <div id="segment-list" class="segment-summary"></div>
+      <h2>Export</h2>
+      <button class="btn btn-secondary" id="btn-export">現在の RenderModel を JSON に</button>
+      <textarea id="json-out" rows="6" readonly></textarea>
+    </aside>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>

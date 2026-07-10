@@ -26,7 +26,10 @@ let package = Package(
             dependencies: [
                 .product(name: "LaserGuideCore", package: "Core"),
             ],
-            path: "Sources/LaserGuideDev"
+            path: "Sources/LaserGuideDev",
+            // DR-0008: キャリブレーション UI の WKWebView 資産。Bundle.module で読む
+            // (CalibrationWindowController が index.html / main.js を loadFileURL する)。
+            resources: [.copy("Resources/calibration")]
         ),
         .testTarget(
             name: "LaserGuideDevTests",
