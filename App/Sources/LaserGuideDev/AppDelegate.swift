@@ -27,8 +27,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
 
     private var statusItem: NSStatusItem?
     private var warpToggleItem: NSMenuItem?
+    private var presentationToggleItem: NSMenuItem?
     private var latencyInfoItem: NSMenuItem?
     private var warpEnabled: Bool = true
+    /// プレゼンテーションモード (issue 2026-07-10-presentation-mode-capture-toggle):
+    /// on のとき overlay window の sharingType を .readOnly にしてキャプチャに映るようにし、
+    /// NSEvent global monitor で mouseDown/Up を購読してクリック可視化サークルを描画する。
+    private var presentationModeEnabled: Bool = false
+    /// プレゼンテーションモード on 時のみ有効な mouseDown/Up 監視 (VM への Action 配送用)。
+    private var presentationClickMonitor: Any?
 
     /// DR-0008: WKWebView キャリブレーション UI。メニューから開いたときに生成、閉じたら再生成。
     private var calibration: CalibrationWindowController?
@@ -106,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         tap?.stop()
         permission.stopLaserOnly()
         stopDragPositionMonitor()
+        stopPresentationClickMonitor()
     }
 
     // MARK: - Drag position monitor (#5)
@@ -221,6 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private func rebuildOverlays(for scan: DisplayScanResult) {
         // 既存 window を閉じて作り直す (Phase 1、削減余地あり)
         setupOverlays(for: scan)
+        // 新規 overlay にプレゼンテーションモード設定を再適用 (sharingType + click monitor)
+        applyPresentationMode()
     }
 
     private func dispatchStateToOverlays(_ state: AppState) {
@@ -248,6 +258,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         warpToggle.state = warpEnabled ? .on : .off
         menu.addItem(warpToggle)
         self.warpToggleItem = warpToggle
+        // プレゼンテーションモード (キャプチャ表示 + クリック可視化) のトグル。既定は off
+        // (通常はキャプチャ除外 = v1 由来の完成品設定を尊重)。on にすると sharingType=.readOnly、
+        // mouseDown/Up を購読してサークルを描画。
+        let presentationToggle = NSMenuItem(
+            title: "プレゼンテーションモード", action: #selector(togglePresentationMode),
+            keyEquivalent: "")
+        presentationToggle.target = self
+        presentationToggle.state = presentationModeEnabled ? .on : .off
+        menu.addItem(presentationToggle)
+        self.presentationToggleItem = presentationToggle
         menu.addItem(.separator())
         // DR-0008: キャリブレーション画面を開く
         let calibItem = NSMenuItem(title: "キャリブレーション...", action: #selector(openCalibration), keyEquivalent: "k")
@@ -278,6 +298,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         } else {
             tap?.stop()
         }
+    }
+
+    @objc private func togglePresentationMode(_ sender: NSMenuItem) {
+        presentationModeEnabled.toggle()
+        sender.state = presentationModeEnabled ? .on : .off
+        applyPresentationMode()
+    }
+
+    /// presentationModeEnabled の値を全 overlay に反映する: sharingType 切替 + click 監視の
+    /// 起動/停止。overlay の再構築 (rebuildOverlays) からも呼ぶことで、新規モニタでも設定が
+    /// 継続する。
+    private func applyPresentationMode() {
+        let type: NSWindow.SharingType = presentationModeEnabled ? .readOnly : .none
+        for ctrl in overlays {
+            ctrl.window.sharingType = type
+        }
+        if presentationModeEnabled {
+            startPresentationClickMonitor()
+        } else {
+            stopPresentationClickMonitor()
+            for (_, vm) in overlayModelById { vm.clearPresentationClick() }
+        }
+    }
+
+    /// プレゼンテーションモード on 時の click 監視。NSEvent.mouseLocation は y-up bottom-left
+    /// なので PermissionMonitor.nsScreenPointToCG で CG y-down に変換して VM に配送する。
+    /// mouseMoved / dragged はここでは購読しない (座標追跡は drag position monitor が既に担う)。
+    private func startPresentationClickMonitor() {
+        stopPresentationClickMonitor()
+        let downMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        let upMask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp, .otherMouseUp]
+        presentationClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [downMask, upMask].reduce(NSEvent.EventTypeMask()) { $0.union($1) }
+        ) { [weak self] event in
+            guard let self else { return }
+            let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
+            let point = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
+            let phase: PresentationClickEvent.Phase
+            switch event.type {
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown: phase = .down
+            case .leftMouseUp, .rightMouseUp, .otherMouseUp: phase = .up
+            default: return
+            }
+            let action = PresentationClickEvent(phase: phase, point: point)
+            for (_, vm) in self.overlayModelById { vm.apply(presentationClick: action) }
+        }
+    }
+
+    private func stopPresentationClickMonitor() {
+        if let m = presentationClickMonitor { NSEvent.removeMonitor(m) }
+        presentationClickMonitor = nil
     }
 
     @objc private func copyLatency() {

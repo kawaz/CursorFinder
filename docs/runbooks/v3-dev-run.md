@@ -35,6 +35,7 @@ swift run laserguide-dev
 | メニュー項目 | 挙動 |
 |---|---|
 | 境界ワープ (チェックマーク) | 仮想境界ワープ (CGEventTap) の有効/無効トグル。レーザー描画は独立で常時 on |
+| プレゼンテーションモード (チェックマーク) | on で overlay window の sharingType を .readOnly に切替 (画面キャプチャに映る) + クリック可視化サークルを描画。off で既定 (キャプチャ除外) に戻る。詳細は下記 |
 | キャリブレーション... | 物理配置編集ウィンドウ (WKWebView) を開く。詳細は下記 |
 | tap レイテンシ: ... (表示専用) | メニューを開くたびに最新の集計 (n / p50 / p95 / p99 / max) へ更新される |
 | レイテンシ統計をコピー | 上記の一行をクリップボードへコピー |
@@ -129,9 +130,47 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
 `click` / `console` でドラッグ・確定・取り消し・Export を検証できる (V3 の docs/runbooks/ui-testing.md
 相当の手法)。console にエラーが出ないこと、`[mock] action:` が期待通り並ぶことを併せて確認する。
 
+## プレゼンテーションモード (issue: presentation-mode-capture-toggle)
+
+メニューバー `LG` → 「プレゼンテーションモード」 でトグル。既定は off。
+
+### on 時の挙動
+
+- 全 overlay window の `sharingType` を `.readOnly` に切替 (画面共有 / スクリーンショットに映る)
+- NSEvent global monitor で mouseDown / mouseUp (left / right / other) を購読
+- mouseDown 時、カーソル座標を中心に半透明の白サークル (青い縁取り、直径 60px) を該当モニタ上に描画
+- mouseUp 後は約 0.3 秒かけて opacity が段階的に減衰し消える (再度 mouseDown で瞬時に再表示)
+
+### off 時の挙動
+
+- 全 overlay window の `sharingType` を `.none` に戻す (v1 由来の完成品設定、通常の非キャプチャ状態)
+- mouseDown/Up 監視を停止
+- 減衰中のサークルは即座に消える
+
+### 動作確認観点
+
+- 画面共有 (macOS の画面共有 / QuickTime のスクリーン録画 / Zoom / Google Meet 等) を起動して LG overlay が
+  相手側に映ることを確認 (off の間は映らない)
+- 任意のディスプレイでクリック押下 → 白サークルが即時表示、離すと 0.3 秒でフェードアウト
+- モニタ構成変更 (screenParametersChanged) 後もプレゼンテーションモード設定が継続すること
+  (rebuildOverlays で sharingType と click monitor が再適用される)
+- クリック可視化は tap レイテンシ経路に触れず、監視は NSEvent global monitor のみ (ワープ挙動に影響しない)
+
+### 実装メモ
+
+- `PresentationClickEvent` (App/OverlayViewModel.swift) を「Action として形式化」した型として提供
+- click 可視化は VM のプロパティ `clickCircle: ClickCirclePresentation?` に集約、LaserOverlayView が ZStack で
+  Canvas レーザーの上に重ねて描画
+- clickCircle の減衰は AppKit 側 Timer で opacity 値を段階的に更新 (SwiftUI 暗黙 animation を回避、
+  ドラッグ中の main run loop でも 60Hz coalesce と衝突せず単独で動く)
+
 ## 既知の制約 (Phase 1)
 
-- 永続化 (persist effect) は NSLog 出力のみ。UserDefaults 経路は Phase 2。
+- 永続化 (persist effect) は UserDefaults 経路で書き込み済 (DR-0007 決定 2)。v1 設定は起動時に検出したら
+  v3 スキーマへ migration + canonicalize (3-part hardwareId → 4-part) して v3 key に保存する。
+  実 v1 設定の migration 動作 (配布版 v0.12.1 が書いた実キーからの取り込み) は kawaz 実機で確認。
+  Reconcile 結果の inactiveUserSegments は state.inactiveUserSegments に保持されるが、
+  キャリブレーション UI での可視化は次ラウンド。
 - 実行中の権限失効検知は起動時判定のみ (tap callback 経由での剥奪検知は Phase 2)。
 - ディスプレイ構成変更時、overlay を全部作り直す (差分更新は Phase 2)。
 - キャリブレーション UI は物理配置編集 (pose translate ドラッグ) のみ。セグメント PB/BP の

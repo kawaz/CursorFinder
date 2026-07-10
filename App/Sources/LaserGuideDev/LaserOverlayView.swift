@@ -25,23 +25,57 @@ struct LaserOverlayView: View {
     @ObservedObject var model: OverlayViewModel
 
     var body: some View {
-        Canvas { context, size in
-            guard let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) else { return }
+        ZStack {
+            Canvas { context, size in
+                guard let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) else { return }
+                let bounds = selfDisplay.logicalBounds
+
+                // #2 アイドル時は非描画 (移動再開で再表示)。currentMouseLocation は保持したままにし、
+                //   再表示時に前回位置から瞬時に描き始める。
+                guard model.isMouseActive, let mouseGlobal = model.currentMouseLocation else { return }
+
+                // #1 自ディスプレイの 4 隅のみ。#4 pose を経由しない。
+                let target = LaserGeometry.viewLocal(mouseGlobal, in: bounds)
+                for corner in LaserGeometry.fourCorners(of: bounds) {
+                    let start = LaserGeometry.viewLocal(corner, in: bounds)
+                    drawLaser(context: context, from: start, to: target)
+                }
+            }
+            .drawingGroup(opaque: false, colorMode: .nonLinear)
+            .allowsHitTesting(false)
+
+            // プレゼンテーションモード時のクリック可視化サークル。off 時 / 減衰完了時は clickCircle=nil で
+            // 非描画。VM 側で opacity が段階的に減衰するので、view はそのまま fill opacity として使う
+            // (SwiftUI 標準の暗黙 animation に頼らず、AppKit 側 Timer 由来の値変化で見せる)。
+            clickCircleView
+        }
+    }
+
+    @ViewBuilder
+    private var clickCircleView: some View {
+        if let click = model.clickCircle,
+           let selfDisplay = model.state.displays.first(where: { $0.id == displayId })
+        {
             let bounds = selfDisplay.logicalBounds
-
-            // #2 アイドル時は非描画 (移動再開で再表示)。currentMouseLocation は保持したままにし、
-            //   再表示時に前回位置から瞬時に描き始める。
-            guard model.isMouseActive, let mouseGlobal = model.currentMouseLocation else { return }
-
-            // #1 自ディスプレイの 4 隅のみ。#4 pose を経由しない。
-            let target = LaserGeometry.viewLocal(mouseGlobal, in: bounds)
-            for corner in LaserGeometry.fourCorners(of: bounds) {
-                let start = LaserGeometry.viewLocal(corner, in: bounds)
-                drawLaser(context: context, from: start, to: target)
+            let local = LaserGeometry.viewLocal(click.point, in: bounds)
+            // 対象モニタ外の click は描画しない (view 外に位置指定しても実害は無いが、透明矩形の
+            // 描画コストを避ける)。
+            let inside = local.x >= 0 && local.y >= 0
+                && local.x <= (bounds.maxX - bounds.minX)
+                && local.y <= (bounds.maxY - bounds.minY)
+            if inside {
+                Circle()
+                    .fill(Color.white.opacity(click.opacity))
+                    .overlay(
+                        Circle().strokeBorder(
+                            Color.blue.opacity(min(1.0, click.opacity + 0.2)),
+                            lineWidth: 3)
+                    )
+                    .frame(width: 60, height: 60)
+                    .position(local)
+                    .allowsHitTesting(false)
             }
         }
-        .drawingGroup(opaque: false, colorMode: .nonLinear)
-        .allowsHitTesting(false)
     }
 
     private func drawLaser(context: GraphicsContext, from corner: CGPoint, to pointer: CGPoint) {

@@ -95,4 +95,50 @@ final class OverlayViewModelTests: XCTestCase {
 
         XCTAssertFalse(vm.isMouseActive, "マウス位置が変わっていないので active化しない")
     }
+
+    // MARK: - プレゼンテーションモード (issue: presentation-mode-capture-toggle)
+
+    /// mouseDown 相当を apply(presentationClick:) で流すと、即座に clickCircle が
+    /// initial opacity で表示される (coalesce タイマーは経由しない = 描画 latency を最小化)。
+    func testPresentationClickDownShowsCircleImmediately() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.clickInitialOpacity = 0.6
+        XCTAssertNil(vm.clickCircle)
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 100, y: 200)))
+        XCTAssertNotNil(vm.clickCircle)
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 100, y: 200))
+        XCTAssertEqual(vm.clickCircle?.opacity, 0.6)
+    }
+
+    /// mouseUp 相当で opacity が段階的に減衰し、clickFadeDuration 経過後に nil に戻る。
+    func testPresentationClickUpFadesOutAndClears() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.clickInitialOpacity = 0.6
+        vm.clickFadeDuration = 0.12  // テスト時間短縮
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 10, y: 20)))
+        XCTAssertEqual(vm.clickCircle?.opacity, 0.6)
+
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .up, point: LogicalPoint(x: 10, y: 20)))
+        // 直後は減衰中 (まだ opacity > 0)
+        XCTAssertNotNil(vm.clickCircle)
+
+        let exp = expectation(description: "fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertNil(vm.clickCircle, "clickFadeDuration 経過後に clickCircle=nil に戻る")
+    }
+
+    /// クリック中 (down 直後) に clearPresentationClick() が呼ばれると即座にサークルが消える
+    /// (= プレゼンテーションモード off 遷移で減衰を待たず消す振る舞いの固定)。
+    func testClearPresentationClickRemovesCircleImmediately() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 0, y: 0)))
+        XCTAssertNotNil(vm.clickCircle)
+        vm.clearPresentationClick()
+        XCTAssertNil(vm.clickCircle)
+    }
 }
