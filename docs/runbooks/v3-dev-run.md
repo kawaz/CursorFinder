@@ -35,6 +35,7 @@ swift run laserguide-dev
 | メニュー項目 | 挙動 |
 |---|---|
 | 境界ワープ (チェックマーク) | 仮想境界ワープ (CGEventTap) の有効/無効トグル。レーザー描画は独立で常時 on |
+| キャリブレーション... | 物理配置編集ウィンドウ (WKWebView) を開く。詳細は下記 |
 | tap レイテンシ: ... (表示専用) | メニューを開くたびに最新の集計 (n / p50 / p95 / p99 / max) へ更新される |
 | レイテンシ統計をコピー | 上記の一行をクリップボードへコピー |
 | Quit LaserGuide (dev) | 終了 |
@@ -81,11 +82,59 @@ swift run laserguide-dev
   (2026-07-10 第 2 ラウンド #5: 「レーザー非表示中でもドラッグが重い」という実機報告への対応)。
   ワープ判定はドラッグ中は発火しない設計。
 
+## キャリブレーション画面 (DR-0008)
+
+メニューバー `LG` → 「キャリブレーション...」 (⌘K) で開く。WKWebView 上の web UI で、
+Swift 側 store から push される RenderModel JSON を描画するだけの純 view (幾何ロジックは
+持たない、DR-0008 決定 1)。
+
+### 開き方と閉じ方
+
+- 開く: メニュー項目「キャリブレーション...」もしくは ⌘K
+- 閉じる: ウィンドウの ✕。編集中 (candidatePose あり) の状態で閉じると `.calibration(.cancel)` が
+  自動送信される (中間状態の残留を防ぐ、CalibrationWindowController.windowWillClose)
+
+### 操作
+
+| 操作 | 挙動 |
+|---|---|
+| モニタをドラッグ | `.calibration(.dragStart)` → `.dragMove(candidatePose)` を都度送信、右サイドバーに「候補 translate」が表示され、canvas も候補位置で再描画 (RenderModel の physicalBounds に candidatePose 適用済み) |
+| ドロップ (マウス離し) | `.calibration(.dragEnd)` 送信 |
+| 確定ボタン | `.calibration(.commit)` 送信 → candidatePose が確定 pose に昇格 + persist effect |
+| 取り消しボタン | `.calibration(.cancel)` 送信 → 候補破棄、確定 pose は不変 |
+| Export ボタン | 現在の RenderModel JSON を表示 (デバッグ・issue 添付用) |
+
+### 動作確認観点
+
+- 起動直後、実機のモニタ数だけ矩形が描画される (物理 mm 空間、y-down)
+- モニタをドラッグ中はステータスに「プレビュー中 (未確定)」が出て、サイドバーに候補 translate mm が更新される
+- 「確定」で pose translate が候補値へ昇格し、NSLog に `[LaserGuide] persist: ...` が出る (Phase 1 は NSLog のみ)
+- 「取り消し」で候補が破棄され、canvas 描画も元の確定 pose に戻る
+- Segment 一覧は表示のみ (今ラウンドでは追加/削除編集 UI は未実装、次ラウンドの対象)
+- 別ウィンドウ (overlay) のワープ判定は編集中も**確定済み tables** に基づいて動く (DR-0004 の
+  「判定と描画の分離」)。プレビュー中の候補 pose はワープ挙動を変えない
+
+### 開発モード (ブラウザ単体 / agent-browser 検証)
+
+Swift ビルド不要でブラウザだけで挙動確認するには live-server で `Resources/calibration/` を配信する:
+
+```
+cd App/Sources/LaserGuideDev/Resources/calibration
+bunx live-server --port=3456 --no-browser
+```
+
+Swift ブリッジ (`window.webkit.messageHandlers.laserguide`) が無い環境では、main.js の mock bridge が
+fixture (実機トポロジ相当のダミー displays) を返し、action は `console.log('[mock] ...')` に流す。
+`agent-browser open http://127.0.0.1:3456/` で開き、`agent-browser screenshot` / `mouse` /
+`click` / `console` でドラッグ・確定・取り消し・Export を検証できる (V3 の docs/runbooks/ui-testing.md
+相当の手法)。console にエラーが出ないこと、`[mock] action:` が期待通り並ぶことを併せて確認する。
+
 ## 既知の制約 (Phase 1)
 
 - 永続化 (persist effect) は NSLog 出力のみ。UserDefaults 経路は Phase 2。
 - 実行中の権限失効検知は起動時判定のみ (tap callback 経由での剥奪検知は Phase 2)。
 - ディスプレイ構成変更時、overlay を全部作り直す (差分更新は Phase 2)。
-- キャリブレーション UI・設定 UI は無い (WebView 経路は別タスク)。
+- キャリブレーション UI は物理配置編集 (pose translate ドラッグ) のみ。セグメント PB/BP の
+  追加/削除編集 UI は次ラウンド (現状は表示のみ)。設定 UI は無い。
 - CGDisplayScreenSize=0 のモニタ (プロジェクタ等) では fallback 110dpi を暫定使用するが、
   UI 上の警告表示は Phase 2。
