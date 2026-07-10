@@ -121,8 +121,11 @@ extension RenderModel {
             let originalPose = state.displays.first(where: { $0.id == d.id })?.pose ?? d.pose
             let candidate = state.calibration.candidatePoses[d.id]
             let candidatePoint: Point?
-            if let c = candidate { candidatePoint = Point(x: c.translate.x, y: c.translate.y) }
-            else { candidatePoint = nil }
+            if let c = candidate {
+                candidatePoint = Point(x: c.translate.x, y: c.translate.y)
+            } else {
+                candidatePoint = nil
+            }
             return Display(
                 id: d.id,
                 name: displayName(for: d.id),
@@ -180,7 +183,12 @@ extension RenderModel {
     }
 
     private static func edgeTypeString(_ t: EdgeType) -> String {
-        switch t { case .pp: return "pp"; case .pb: return "pb"; case .bp: return "bp"; case .bb: return "bb" }
+        switch t {
+        case .pp: return "pp"
+        case .pb: return "pb"
+        case .bp: return "bp"
+        case .bb: return "bb"
+        }
     }
 
     /// Phase 1: 表示名は display id をそのまま返す (Phase 2 で DisplaySnapshotProvider から

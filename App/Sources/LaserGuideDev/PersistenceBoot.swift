@@ -87,8 +87,7 @@ public enum PersistenceBoot {
 
         // v3 保存の読み込み。decodeTolerantly で「未来 version」も安全に nil 化される。
         if let data = store.data(forKey: workspaceKey),
-           let persisted = PersistedWorkspaceV3.decodeTolerantly(data)
-        {
+           let persisted = PersistedWorkspaceV3.decodeTolerantly(data) {
             let temporaryKeysDeleted = removeV1TemporaryKeys(store: store)
             let reconciled = reconcileWithScaleOverride(
                 persisted: persisted, currentSnapshots: currentSnapshots,

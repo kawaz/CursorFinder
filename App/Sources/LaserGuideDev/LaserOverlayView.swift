@@ -26,7 +26,7 @@ struct LaserOverlayView: View {
 
     var body: some View {
         ZStack {
-            Canvas { context, size in
+            Canvas { context, _ in
                 guard let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) else { return }
                 let bounds = selfDisplay.logicalBounds
 
@@ -65,8 +65,7 @@ struct LaserOverlayView: View {
     @ViewBuilder
     private var focusFlashView: some View {
         if let flash = model.focusFlash, flash.displayId == displayId,
-           let selfDisplay = model.state.displays.first(where: { $0.id == displayId })
-        {
+           let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) {
             let width = selfDisplay.logicalBounds.maxX - selfDisplay.logicalBounds.minX
             let height = selfDisplay.logicalBounds.maxY - selfDisplay.logicalBounds.minY
             let strokeThickness: CGFloat = 24
@@ -83,8 +82,7 @@ struct LaserOverlayView: View {
     @ViewBuilder
     private var clickCircleView: some View {
         if let click = model.clickCircle,
-           let selfDisplay = model.state.displays.first(where: { $0.id == displayId })
-        {
+           let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) {
             let bounds = selfDisplay.logicalBounds
             let local = LaserGeometry.viewLocal(click.point, in: bounds)
             // 対象モニタ外の click は描画しない (view 外に位置指定しても実害は無いが、透明矩形の
@@ -143,7 +141,7 @@ struct LaserOverlayView: View {
         let gradient = Gradient(stops: [
             .init(color: Color.red.opacity(0.85), location: 0.0),
             .init(color: Color.yellow.opacity(0.65), location: 0.35),
-            .init(color: Color.white.opacity(0.35), location: 1.0),
+            .init(color: Color.white.opacity(0.35), location: 1.0)
         ])
         context.fill(path, with: .linearGradient(gradient, startPoint: corner, endPoint: apex))
     }

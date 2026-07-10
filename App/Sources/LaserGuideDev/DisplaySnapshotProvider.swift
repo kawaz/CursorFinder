@@ -73,9 +73,15 @@ public enum DisplaySnapshotProvider {
         )
     }
 
+    // swiftlint:disable large_tuple
     /// mm 実測 (CGDisplayScreenSize) と px サイズから mm/px スケールを導出する。
     /// mm=0 のディスプレイ (プロジェクタ・EDID 不備) は fallback DPI を使い、`usedFallback=true` を返す。
+    ///
+    /// 3-要素 tuple は SwiftLint の large_tuple 対象になるが、この 3 値 (X 軸スケール / Y 軸スケール
+    /// / fallback フラグ) は「1 回の scale 導出結果」として密結合で、struct 化するほど公開語彙にする
+    /// 意味は薄い (呼び出し側 1 箇所)。
     static func scaleFor(cgId: CGDirectDisplayID, bounds: CGRect) -> (scaleX: Double, scaleY: Double, usedFallback: Bool) {
+    // swiftlint:enable large_tuple
         let mm = CGDisplayScreenSize(cgId)
         let pxW = Double(bounds.width)
         let pxH = Double(bounds.height)

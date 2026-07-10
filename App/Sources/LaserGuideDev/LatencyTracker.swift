@@ -55,6 +55,8 @@ public final class LatencyTracker {
             p50Microseconds: percentile(0.50),
             p95Microseconds: percentile(0.95),
             p99Microseconds: percentile(0.99),
+            // `sorted.last` は直前の `sorted.isEmpty` guard で non-nil が保証されている
+            // swiftlint:disable:next force_unwrapping
             maxMicroseconds: Double(sorted.last!) / 1000.0
         )
     }

@@ -78,7 +78,11 @@ public func resolveFocusDisplay(
         let dx = cx - center.x
         let dy = cy - center.y
         let sqr = dx * dx + dy * dy
-        if best == nil || sqr < best!.1 { best = (d, sqr) }
+        if let current = best {
+            if sqr < current.1 { best = (d, sqr) }
+        } else {
+            best = (d, sqr)
+        }
     }
     return best.map { FocusDisplayResolution(displayId: $0.0.id, windowCenter: center) }
 }
@@ -136,7 +140,10 @@ public final class FocusFlashObserver {
         var focused: CFTypeRef?
         let posErr = AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focused)
         guard posErr == .success, let focusedRef = focused else { return nil }
-        // AXUIElement は CoreFoundation 型なので force cast で AXUIElement に落とす。
+        // AXUIElement は CoreFoundation 型 (CFTypeID が AXUIElementGetTypeID と一致) なので
+        // force cast で AXUIElement に落とす。AX API 契約上 kAXFocusedWindowAttribute の
+        // 値は必ず AXUIElement を返すため、この cast は AX API 契約が破られない限り安全。
+        // swiftlint:disable:next force_cast
         let axWindow = focusedRef as! AXUIElement
 
         var posValue: CFTypeRef?

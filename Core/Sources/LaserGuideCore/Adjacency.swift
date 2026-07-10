@@ -76,6 +76,11 @@ public enum Adjacency {
         }
     }
 
+    // 内部ヘルパ: `(display, side)` と `(alongStart, alongEnd)` は共に「対」を成す情報で、
+    // それぞれ 1 引数として渡すと関数シグネチャがドメイン語彙 (辺と範囲) に一致する。
+    // swiftlint の function_parameter_count は 5 で切るが、ここは 4 引数 (a辺 / b辺 / range /
+    // 出力) に集約されるため対象外にする方が意味論的に正しい。
+    // swiftlint:disable:next function_parameter_count
     private static func pushPair(
         aDisplay: Display, aSide: Side,
         bDisplay: Display, bSide: Side,

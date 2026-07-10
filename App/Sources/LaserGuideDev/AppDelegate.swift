@@ -1,5 +1,13 @@
 // AppDelegate — 全体の配線 (runtime, tap, overlays, screen change, status bar)
 //
+// SwiftLint 抑止 (file 単位、DR-0010 スコープ内):
+//   - file_length / type_body_length: AppDelegate は App の起動 orchestration を担う
+//     配線層で、tap / overlay / persistence / menu / focus flash / calibration の各
+//     サブシステムを stateful に紐づける単一責務クラス。分割は「起動順序に依存する
+//     配線を複数箇所に分散させる」副作用があり、Phase 1 の単一責務が明確なうちは
+//     まとまっている方が可読性が高い。Phase 2 で個別コーディネータへの切り出しを検討。
+// swiftlint:disable file_length
+//
 // フロー:
 //   1. DisplaySnapshotProvider.scan() → 初期 AppState (Display + 初期 pose)
 //   2. AppRuntime を作り、権限があれば EventTapController.start()。
@@ -13,9 +21,14 @@ import AppKit
 import Foundation
 import LaserGuideCore
 
+// swiftlint:disable:next type_body_length
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, EffectInterpreter {
 
-    private var runtime: AppRuntime!
+    /// `applicationDidFinishLaunching` で必ず生成される。他のライフサイクルメソッドは
+    /// 起動完了後にしか AppKit から呼ばれないため、この IUO は「クラス invariant を
+    /// 起動タイミング制約で保証する」正当な使い方。SPM executable の main.swift 経路
+    /// でも同様に applicationDidFinishLaunching 前に他のプロパティアクセスは無い。
+    private var runtime: AppRuntime! // swiftlint:disable:this implicitly_unwrapped_optional
     private var tap: EventTapController?
     private let permission = PermissionMonitor()
     /// 2026-07-10 フィードバック #5 対応: tap から除外したドラッグ系イベントでもレーザーが
@@ -65,7 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         switch boot.outcome {
         case let .usedPersisted(reconciled):
             NSLog(
-                "[LaserGuide] persistence loaded: displays=\(reconciled.displays.count) userSegments=\(reconciled.userSegments.count) inactive=\(reconciled.inactiveUserSegments.count) didMigrateFromV1=\(boot.didMigrateFromV1) temporaryKeysDeleted=\(boot.temporaryKeysDeleted.count)"
+                """
+                [LaserGuide] persistence loaded: displays=\(reconciled.displays.count) \
+                userSegments=\(reconciled.userSegments.count) \
+                inactive=\(reconciled.inactiveUserSegments.count) \
+                didMigrateFromV1=\(boot.didMigrateFromV1) \
+                temporaryKeysDeleted=\(boot.temporaryKeysDeleted.count)
+                """
             )
             initial = AppState(
                 displays: reconciled.displays,

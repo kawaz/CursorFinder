@@ -72,7 +72,7 @@ public enum LaserGeometry {
             LogicalPoint(x: r.minX, y: r.minY),
             LogicalPoint(x: r.maxX, y: r.minY),
             LogicalPoint(x: r.minX, y: r.maxY),
-            LogicalPoint(x: r.maxX, y: r.maxY),
+            LogicalPoint(x: r.maxX, y: r.maxY)
         ]
     }
 

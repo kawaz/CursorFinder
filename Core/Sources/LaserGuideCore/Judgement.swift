@@ -45,14 +45,16 @@ public enum Judgement {
     ) -> CrossingJudgement {
         guard let source = tables.display(sourceDisplayId) else { return .noCrossing }
 
-        var best: (t: Double, hit: LogicalPoint, seg: PassSegment)?
+        // 3-要素 tuple は SwiftLint の large_tuple 対象になるので struct として持つ
+        // (意味論的にも「勝者候補」= 単一の集約値、tuple より struct が正)。
+        struct Candidate { let t: Double; let hit: LogicalPoint; let seg: PassSegment }
+        var best: Candidate?
         for seg in tables.osSegments where seg.displayId == sourceDisplayId {
             guard let (hit, t) = intersectLineWithEdgeParam(line, display: source, side: seg.side) else { continue }
             let alongLogical = seg.side.isHorizontal ? hit.x : hit.y
             guard seg.containsAlongEdgeLogical(alongLogical) else { continue }
-            if best == nil || t < best!.t {
-                best = (t, hit, seg)
-            }
+            if let current = best, t >= current.t { continue }
+            best = Candidate(t: t, hit: hit, seg: seg)
         }
         guard let winner = best else { return .noCrossing }
 
@@ -191,9 +193,9 @@ public enum Judgement {
     ) -> (x: Double, y: Double) {
         // 内向き = paired 側の「外辺」から内側へ。y-down なので top 側の内向きは +y、bottom は -y。
         switch side {
-        case .top:    return (0,   mm / pose.scaleY)   // 論理 y+ が内側 (下方向) へ
-        case .bottom: return (0,  -mm / pose.scaleY)   // 論理 y- が内側 (上方向) へ
-        case .left:   return ( mm / pose.scaleX, 0)
+        case .top:    return (0, mm / pose.scaleY)     // 論理 y+ が内側 (下方向) へ
+        case .bottom: return (0, -mm / pose.scaleY)    // 論理 y- が内側 (上方向) へ
+        case .left:   return (mm / pose.scaleX, 0)
         case .right:  return (-mm / pose.scaleX, 0)
         }
     }
