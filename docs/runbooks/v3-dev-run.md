@@ -36,6 +36,7 @@ swift run laserguide-dev
 |---|---|
 | 境界ワープ (チェックマーク) | 仮想境界ワープ (CGEventTap) の有効/無効トグル。レーザー描画は独立で常時 on |
 | プレゼンテーションモード (チェックマーク) | on で overlay window の sharingType を .readOnly に切替 (画面キャプチャに映る) + クリック可視化サークルを描画。off で既定 (キャプチャ除外) に戻る。詳細は下記 |
+| フォーカスフラッシュ (チェックマーク) | on で NSWorkspace + AX でフォーカス変更を購読し、フォーカス先モニタの縁を約 0.5s ハイライト (systemBlue の内側 24px stroke + 8px blur)。既定 off。AX 権限なし時はメニュー項目 disabled (toolTip「アクセシビリティ権限が必要です」)。詳細は下記 |
 | キャリブレーション... | 物理配置編集ウィンドウ (WKWebView) を開く。詳細は下記 |
 | tap レイテンシ: ... (表示専用) | メニューを開くたびに最新の集計 (n / p50 / p95 / p99 / max) へ更新される |
 | レイテンシ統計をコピー | 上記の一行をクリップボードへコピー |
@@ -173,6 +174,57 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
 - **別モニタのウィンドウへ切替**: 移動先モニタだけが光る
 - menubar / Dock 等 AX 非対応対象への切替は発火しない (仕様、observer 冒頭コメント参照)
 
+## フォーカスフラッシュ (DR-0009 Phase A、issue: focus-flash-component)
+
+メニューバー `LG` → 「フォーカスフラッシュ」 でトグル。既定 off。
+
+### on 時の挙動
+
+- `NSWorkspace.didActivateApplicationNotification` を購読 (アプリ切替検知)
+- 切替先の frontmost app から AX (`kAXFocusedWindowAttribute` → `kAXPositionAttribute` /
+  `kAXSizeAttribute`) でウィンドウ frame を取得
+- frame の中心点が包含される display id を解決 (Phase A ではウィンドウ枠の描画はせず、
+  所属モニタ id 解決にのみ frame を使用)。どの display にも含まれない場合は中心距離最小の
+  display にフォールバック (フルスクリーン中や境界跨ぎで発火が空振りしないため)
+- Core reducer が `.focusedDisplayChanged(displayId:)` を受け、`AppState.focusFlash` の
+  generation を単調増加させて上書き (同一 displayId でも generation が進めば描画層は再発火扱い)
+- 対象モニタの overlay に systemBlue の内側 24px stroke + 8px blur を描画、initial opacity=0.6 で
+  立ち上がり ~0.5s かけてフェードアウト
+
+### off 時の挙動
+
+- NSWorkspace 通知の removeObserver
+- 減衰中のフラッシュを即座に消す (VM.clearFocusFlash)
+- `AppState.focusFlash` の値は残るが VM 側の `lastFocusFlashGeneration` が state に synchronize
+  されるので、off 中の発火は「見なかった」ものとして再 on 時にも再生されない
+
+### 動作確認観点 (Cmd-Tab / 同一アプリ内ウィンドウ切替 / 別モニタ切替の 3 系列)
+
+1. **Cmd-Tab で対象モニタが正しく光るか** — 別モニタのアプリへ切替した時、切替後の frontmost
+   アプリのウィンドウがあるモニタの縁がハイライトされる
+2. **別モニタへの切替で対称性が保たれる** — Cmd-Tab 連打で A→B→A→B と切替した時、常に切替
+   直後のモニタだけが光り、直前まで光っていたモニタは滑らかに消える (generation カウンタ上書き
+   の視覚確認)
+3. **同一アプリ内のウィンドウ切替 (Cmd-\`) は Phase A では発火しない** — `didActivateApplication`
+   通知は「アプリ間の切替」のみ発火するため、同一アプリ内の複数ウィンドウ間切替では反応しない。
+   これは Phase A のスコープ (DR-0009 決定 5)、Phase B の kAXFocusedWindowChangedNotification
+   observer 追加待ち
+4. **連続切替の generation 挙動** — Cmd-Tab を短時間で連打しても、都度切替先モニタが光る (フェードが
+   重ならずリフレッシュされる)
+5. **複数アプリの同一モニタ内切替** — 同じモニタに複数アプリのウィンドウがある時、その内でアプリ
+   切替すると同じモニタが再び光る (「軽く再発火」の task 指示に沿う)
+6. **フェード時間 0.5s の体感** — 長すぎ / 短すぎと感じたら `OverlayViewModel.focusFlashDuration`
+   の初期値を実機確認結果で調整
+7. **フェード色・厚み・blur の体感** — 既存レーザー (赤系) と競合していないか、モニタ全体の縁として
+   自然な太さか
+8. **AX 権限なし時の degrade** — システム設定でアクセシビリティ権限を落としてから起動すると、
+   メニュー項目「フォーカスフラッシュ」が disabled (灰色) で表示され、toolTip で理由が示される
+9. **プレゼンテーションモードとの共存** — 両方 on で切替時に click 可視化と focus flash が
+   干渉しないか (別レーンで動くはずだが実機確認)
+10. **Y 座標系 (実機観測事項)** — DR-0009 決定 3 は「AX y-up」と記述しているが実装は identity 変換
+    (CG y-down 直接、`FocusFlashObserver.convertAXFrameToCGGlobal`)。実機で「フラッシュ位置が
+    ずれる (別モニタが光る)」現象が観測されたら y-flip 実装への差し替え候補
+
 ## 既知の制約 (Phase 1)
 
 - 永続化 (persist effect) は UserDefaults 経路で書き込み済 (DR-0007 決定 2)。v1 設定は起動時に検出したら
@@ -186,3 +238,6 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
   追加/削除編集 UI は次ラウンド (現状は表示のみ)。設定 UI は無い。
 - CGDisplayScreenSize=0 のモニタ (プロジェクタ等) では fallback 110dpi を暫定使用するが、
   UI 上の警告表示は Phase 2。
+- フォーカスフラッシュ (DR-0009) は Phase A のみ実装済み。同一アプリ内のウィンドウ切替 (Cmd-\`)
+  検知 (kAXFocusedWindowChangedNotification observer) と、ウィンドウ枠のアウトライン強調は
+  Phase B で追加予定。
