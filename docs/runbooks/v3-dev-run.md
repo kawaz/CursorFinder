@@ -2,7 +2,9 @@
 
 `swift run laserguide-dev` で立ち上げる開発用の常駐アプリ。メニューバーに `LG` として現れ、
 各ディスプレイに透明オーバーレイを張ってレーザーを描画し、CGEventTap 経由で仮想境界ワープを実行する。
-リリース用 xcodeproj への配線は別タスク。
+
+DR-0010 で SPM 完結 + `scripts/build-app-bundle.sh` による .app バンドル組み立てへ移行済み。
+配布用 `.app` の生成手順は本文書末尾の「.app バンドルのローカルビルド (DR-0010)」節を参照。
 
 ## 前提
 
@@ -232,3 +234,49 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
 - フォーカスフラッシュ (DR-0009) は Phase A のみ実装済み。同一アプリ内のウィンドウ切替 (Cmd-\`)
   検知 (kAXFocusedWindowChangedNotification observer) と、ウィンドウ枠のアウトライン強調は
   Phase B で追加予定。
+
+## .app バンドルのローカルビルド (DR-0010)
+
+配布用 `LaserGuide.app` を SPM + `scripts/build-app-bundle.sh` で組み立てる手順。CD workflow
+(`.github/workflows/cd-auto-release-and-deploy.yml`) も同じ script を APPLE_SIGNING_IDENTITY
+経由で呼び出す (kawaz の実 identity は CI 側 secrets)。
+
+### ad-hoc 署名でのローカルビルド
+
+```bash
+just build-app
+# or
+scripts/build-app-bundle.sh --version 0.0.0-local
+```
+
+生成物: `build/app/LaserGuide.app` (`codesign --verify --deep --strict` pass)。
+
+### Finder からの起動確認 (kawaz 実機マニュアル手順)
+
+ad-hoc 署名の .app は Gatekeeper に弾かれるので、初回起動時のみ以下:
+
+1. Finder で `build/app/LaserGuide.app` を右クリック → 「開く」を選ぶ (ダブルクリックだと開けない)
+2. 「開いてもよろしいですか？」ダイアログで「開く」
+3. メニューバーに `LG` アイコンが出ることを確認
+4. システム設定 → プライバシーとセキュリティ → アクセシビリティ で `LaserGuide` を許可
+5. 再起動後、レーザー描画とワープが `swift run laserguide-dev` と同挙動になることを確認
+
+### 実 identity 署名の CI 経路 (参考、CI/kawaz 実機のみ)
+
+```bash
+scripts/build-app-bundle.sh \
+  --version <VERSION> \
+  --identity "Developer ID Application: ... (<TEAM>)"
+```
+
+identity 指定時のみ `codesign --options runtime --timestamp` が自動付与され、notarize 前提の
+Hardened Runtime + secure timestamp が満たされる。以降の `notarytool submit --wait` と
+`stapler staple` は CD workflow の該当ステップを参照 (ローカルでは通常実行しない)。
+
+### 検証コマンド (ad-hoc / 実 identity 共通)
+
+```bash
+codesign --verify --deep --strict --verbose=2 build/app/LaserGuide.app
+codesign -dv --verbose=4 build/app/LaserGuide.app
+plutil -p build/app/LaserGuide.app/Contents/Info.plist
+```
