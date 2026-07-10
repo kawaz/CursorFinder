@@ -28,10 +28,15 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
     // MARK: - Show
 
     /// 既に開いていれば前面に、無ければ新規生成して開く。
+    ///
+    /// 2026-07-10 実機フィードバック第 2 ラウンド #1: LSUIElement=true (accessory app、
+    /// status bar のみでドック無し) の環境ではウィンドウが自動的に最前面へ来ないことがある。
+    /// activate → makeKeyAndOrderFront → orderFrontRegardless の順で明示的に前面化を保証する。
     func show() {
         if let w = window {
-            w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            w.makeKeyAndOrderFront(nil)
+            w.orderFrontRegardless()
             return
         }
         let contentRect = NSRect(x: 0, y: 0, width: 1000, height: 640)
@@ -40,6 +45,8 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
         w.title = "LaserGuide キャリブレーション"
         w.delegate = self
         w.isReleasedWhenClosed = false
+        // contentRect の origin (0,0) のまま出すと画面下端に張り付く。画面中央に出す。
+        w.center()
 
         let config = WKWebViewConfiguration()
         let ucc = WKUserContentController()
@@ -59,8 +66,9 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
         // 状態購読: 既存の stateDidChange は overlay 側にも配られているので、そちらを壊さないように
         // 追加購読チェインを組む。AppRuntime 側に複数購読 API が無いので、AppDelegate 側で chain する
         // (このコントローラは単体では runtime.stateDidChange を横取りしない)。
-        w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        w.orderFrontRegardless()
 
         // 初回 push は WebView の didFinish で行いたいが、AppDelegate 側からも apply(state:) で
         // trigger されるので待ち受けだけ用意しておく。
@@ -78,25 +86,34 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
         wv.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
     }
 
-    /// キャリブレーション UI の `index.html` を、SPM 経路 (`Bundle.module`) と .app 経路
-    /// (`Bundle.main.resourceURL/calibration/`) の両方から探す。
+    /// キャリブレーション UI の `index.html` を、.app 経路 (`Bundle.main.resourceURL/calibration/`)
+    /// と SPM 経路 (`Bundle.module`) の両方から探す。
     ///
-    /// 検索順:
-    ///   1. `Bundle.module.url(forResource:...)`: SPM `resources: [.copy("Resources/calibration")]`
+    /// 検索順 (2026-07-10 実機フィードバック第 2 ラウンド #1 で反転):
+    ///   1. `Bundle.main` の `Contents/Resources/calibration/index.html`: build-app-bundle.sh が
+    ///      .app バンドル組み立て時に Resources 直下へコピーした経路。`FileManager.fileExists`
+    ///      だけで判定し、**`Bundle.module` に一切触れない**
+    ///   2. `Bundle.module.url(forResource:...)`: SPM `resources: [.copy("Resources/calibration")]`
     ///      が展開した bundle。`swift run laserguide-dev` はこの経路を取る
-    ///   2. `Bundle.main` の `Contents/Resources/calibration/index.html`: build-app-bundle.sh が
-    ///      .app バンドル組み立て時に Resources 直下へコピーした経路
+    ///
+    /// 順序を .app 優先にした理由: `Bundle.module` は SPM が生成する static computed property で、
+    /// 初回アクセス時に `LaserGuideDev_LaserGuideDev.bundle` を探せないと `fatalError` する実装
+    /// (Swift 5.9 の生成コード)。.app バンドルは `Contents/Resources/calibration/` に直接資産を
+    /// 置くレイアウトで `LaserGuideDev_LaserGuideDev.bundle` 自体が存在しないため、旧実装 (`Bundle.module`
+    /// を先に呼ぶ) は .app 環境で毎回この fatalError を踏む可能性があった (開発機では `.build` の
+    /// 絶対パスが `Bundle.module` の探索先に偶然残っていて動いていただけ)。`Bundle.main` を先に
+    /// `fileExists` だけで判定すれば、.app 環境では `Bundle.module` に到達せずに済む。
     ///
     /// どちらでも見つからない場合は nil を返し、呼び出し側が NSLog で報告する。
     static func calibrationIndexURL() -> URL? {
-        if let url = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "calibration") {
-            return url
-        }
         if let base = Bundle.main.resourceURL {
             let fallback = base.appendingPathComponent("calibration/index.html")
             if FileManager.default.fileExists(atPath: fallback.path) {
                 return fallback
             }
+        }
+        if let url = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "calibration") {
+            return url
         }
         return nil
     }

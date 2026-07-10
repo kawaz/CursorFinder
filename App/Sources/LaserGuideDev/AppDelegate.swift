@@ -272,6 +272,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         }
     }
 
+    /// 2026-07-10 実機フィードバック第 2 ラウンド #3: 起動時に権限が無かった場合、tap は
+    /// 永久に nil のままだった (再起動しないと有効化されない)。メニューを開くたびに呼び、
+    /// 権限が後から付与されていれば applicationDidFinishLaunching の権限あり分岐と同じ配線
+    /// (tap 生成 → laser-only fallback 停止 → drag position monitor 起動) をその場で行う。
+    /// 既に tap があるか、まだ権限が無ければ何もしない (冪等)。
+    private func ensureTapIfTrusted() {
+        guard tap == nil else { return }
+        guard PermissionMonitor.isTrusted(prompt: false) else { return }
+        let ctrl = EventTapController(runtime: runtime)
+        guard ctrl.start() else { return }
+        tap = ctrl
+        permission.stopLaserOnly()
+        startDragPositionMonitor()
+    }
+
     // MARK: - Status bar
 
     private func setupStatusItem() {
@@ -389,23 +404,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
 
     /// プレゼンテーションモード on 時の click 監視。NSEvent.mouseLocation は y-up bottom-left
     /// なので PermissionMonitor.nsScreenPointToCG で CG y-down に変換して VM に配送する。
-    /// mouseMoved / dragged はここでは購読しない (座標追跡は drag position monitor が既に担う)。
+    ///
+    /// 2026-07-10 実機フィードバック第 2 ラウンド #2: down/up に加え dragged 系も購読し、
+    /// ボタンを押している間サークルがカーソルに追従するようにする。mouseMoved (ボタンを
+    /// 押していない移動) はここでは購読しない — 座標追跡は既存の drag position monitor が
+    /// 別経路で担い、責務は変えない。
+    ///
+    /// パフォーマンス: dragged は OS のイベントレポートレートに比例した高頻度で飛んでくる。
+    /// drag position monitor (#5) と同じパターンで、サークルが表示されていない (= up 後、
+    /// down を経ていないドラッグ) 場合は CG 変換と全 VM 走査を行わずに早期 return する。
     private func startPresentationClickMonitor() {
         stopPresentationClickMonitor()
         let downMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         let upMask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp, .otherMouseUp]
+        let dragMask: NSEvent.EventTypeMask = [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         presentationClickMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [downMask, upMask].reduce(NSEvent.EventTypeMask()) { $0.union($1) }
+            matching: [downMask, upMask, dragMask].reduce(NSEvent.EventTypeMask()) { $0.union($1) }
         ) { [weak self] event in
             guard let self else { return }
-            let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
-            let point = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
             let phase: PresentationClickEvent.Phase
             switch event.type {
             case .leftMouseDown, .rightMouseDown, .otherMouseDown: phase = .down
             case .leftMouseUp, .rightMouseUp, .otherMouseUp: phase = .up
+            case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+                guard self.overlayModelById.values.contains(where: { $0.clickCircle != nil }) else { return }
+                phase = .drag
             default: return
             }
+            let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
+            let point = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
             let action = PresentationClickEvent(phase: phase, point: point)
             for (_, vm) in self.overlayModelById { vm.apply(presentationClick: action) }
         }
@@ -416,9 +443,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         presentationClickMonitor = nil
     }
 
+    /// 2026-07-10 実機フィードバック第 2 ラウンド #4: tap が nil (権限なし/未有効化) の場合と
+    /// tap は生きているがサンプルがまだ 0 件の場合を区別する (interface-wording: エラーは
+    /// 原因+対処)。前者は「権限を付与してメニューを開き直す」という具体的な対処を示す。
     @objc private func copyLatency() {
-        let text = tap?.latency.summary()?.oneLineDescription
-            ?? "no latency samples yet (move the mouse first)"
+        let text: String
+        if let tap {
+            text = tap.latency.summary()?.oneLineDescription
+                ?? "no latency samples yet (move the mouse first)"
+        } else {
+            text = "event tap inactive (アクセシビリティ権限を付与後、メニューを開き直してください)"
+        }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -440,11 +475,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     // MARK: - NSMenuDelegate
 
     func menuWillOpen(_ menu: NSMenu) {
-        if let summary = tap?.latency.summary() {
-            latencyInfoItem?.title = "tap レイテンシ: \(summary.oneLineDescription)"
+        // #3: 権限が起動後に付与されたケースに追従する (tap 再生成を試みてから表示を作る)。
+        ensureTapIfTrusted()
+        // #4: tap nil (権限なし) と tap ありサンプル 0 件を区別した表示。
+        if let tap {
+            if let summary = tap.latency.summary() {
+                latencyInfoItem?.title = "tap レイテンシ: \(summary.oneLineDescription)"
+            } else {
+                latencyInfoItem?.title = "tap レイテンシ: 計測待ち (マウスを動かして)"
+            }
         } else {
-            latencyInfoItem?.title = "tap レイテンシ: 計測待ち (マウスを動かして)"
+            latencyInfoItem?.title = "tap レイテンシ: event tap 無効 (アクセシビリティ権限を確認してください)"
         }
+        // #3: focusFlash トグルは権限付与後にメニューを開き直せば有効化される。
+        let trusted = PermissionMonitor.isTrusted(prompt: false)
+        focusFlashToggleItem?.isEnabled = trusted
+        focusFlashToggleItem?.toolTip = trusted ? nil : "アクセシビリティ権限が必要です"
     }
 
     // MARK: - EffectInterpreter

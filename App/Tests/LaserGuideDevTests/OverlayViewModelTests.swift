@@ -131,6 +131,73 @@ final class OverlayViewModelTests: XCTestCase {
         XCTAssertNil(vm.clickCircle, "clickFadeDuration 経過後に clickCircle=nil に戻る")
     }
 
+    /// 2026-07-10 第 2 ラウンド #2 + レビュー major-1: down 後の drag はサークルの point だけを
+    /// 更新し opacity は変えない (= ボタンを押している間カーソルに追従し続ける)。ただし drag は
+    /// OS のイベントレポートレートで高頻度に届くため、down/up (状態遷移、即時反映) と違い
+    /// state/mouseLocation と同じ coalesce に合流する仕様: 呼んだ瞬間には反映されず、
+    /// 1 interval 内の複数 drag は flush 時に最後の値だけが残る (トレーリングエッジ間引き)。
+    func testPresentationClickDragUpdatesPointViaCoalesceWhileKeepingOpacity() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.clickInitialOpacity = 0.6
+        // down は即時反映 (表示開始のレイテンシが体感に直結するため coalesce に乗せない)
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 10, y: 20)))
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 10, y: 20))
+        XCTAssertEqual(vm.clickCircle?.opacity, 0.6)
+
+        // 1 interval 内に複数 drag: 直後はまだ down の位置のまま (即時 @Published しない)
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .drag, point: LogicalPoint(x: 300, y: 400)))
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .drag, point: LogicalPoint(x: 500, y: 600)))
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 10, y: 20), "flush 前は反映されない")
+
+        let exp = expectation(description: "flush")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 500, y: 600), "flush 後、最後の drag 位置だけが反映される")
+        XCTAssertEqual(vm.clickCircle?.opacity, 0.6, "drag では opacity が変わらない")
+    }
+
+    /// up 後 (= clickCircle が nil に戻った後) に drag が来ても無視される
+    /// (= down を経ていないドラッグまでサークルを復活させない)。
+    func testPresentationClickDragAfterUpIsIgnored() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.clickInitialOpacity = 0.6
+        vm.clickFadeDuration = 0.06  // テスト時間短縮
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 0, y: 0)))
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .up, point: LogicalPoint(x: 0, y: 0)))
+
+        let exp = expectation(description: "fade complete")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertNil(vm.clickCircle, "前提: fade 完了で nil")
+
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .drag, point: LogicalPoint(x: 999, y: 999)))
+        XCTAssertNil(vm.clickCircle, "down を経ていない drag はサークルを復活させない")
+    }
+
+    /// down → drag → up の順で、up 後の減衰は最後の drag 位置から始まる
+    /// (= 離した位置にジャンプせず、ドラッグ追従の到達点から消える)。
+    func testPresentationClickUpAfterDragFadesFromLastDragPosition() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.clickInitialOpacity = 0.6
+        vm.clickFadeDuration = 0.5  // fade 完了前に up 直後の point を確認できるよう長めに
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .down, point: LogicalPoint(x: 0, y: 0)))
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .drag, point: LogicalPoint(x: 100, y: 100)))
+        vm.apply(presentationClick: PresentationClickEvent(
+            phase: .up, point: LogicalPoint(x: 100, y: 100)))
+        // up 直後 (減衰タイマーの初回 tick 前): point は最後の drag 位置のまま
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 100, y: 100), "up は最後の drag 位置で減衰開始")
+    }
+
     /// クリック中 (down 直後) に clearPresentationClick() が呼ばれると即座にサークルが消える
     /// (= プレゼンテーションモード off 遷移で減衰を待たず消す振る舞いの固定)。
     func testClearPresentationClickRemovesCircleImmediately() {

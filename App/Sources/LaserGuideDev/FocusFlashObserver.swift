@@ -122,12 +122,16 @@ public final class FocusFlashObserver {
     // MARK: - internals
 
     private func handleAppActivation(_ app: NSRunningApplication) {
+        NSLog("[LaserGuide focus] activated app=\(app.localizedName ?? "?") pid=\(app.processIdentifier)")
         guard let runtime else { return }
         guard let frame = focusedWindowFrame(for: app.processIdentifier) else {
             // AX 取得失敗: このフォーカス切替は捨てる (Phase A で degrade を明示)。
+            // 2026-07-10 #3: silent-fail のままだと実機で切り分けできないため、
+            // focusedWindowFrame 内の各 guard で NSLog 済み (AXError code 込み)。
             return
         }
         guard let resolved = resolveFocusDisplay(windowFrame: frame, displays: runtime.state.displays) else {
+            NSLog("[LaserGuide focus] resolveFocusDisplay returned nil (displays empty?)")
             return
         }
         runtime.dispatch(.focusedDisplayChanged(displayId: resolved.displayId))
@@ -139,7 +143,13 @@ public final class FocusFlashObserver {
         let axApp = AXUIElementCreateApplication(procId)
         var focused: CFTypeRef?
         let posErr = AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focused)
-        guard posErr == .success, let focusedRef = focused else { return nil }
+        guard posErr == .success, let focusedRef = focused else {
+            // 2026-07-10 #3: silent-fail 診断。対象アプリが AX 非対応 / システム UI 等で
+            // kAXFocusedWindowAttribute が取れないケースを実機の Console.app から切り分け
+            // できるよう AXError code を出力する。
+            NSLog("[LaserGuide focus] kAXFocusedWindowAttribute failed: pid=\(procId) axError=\(posErr.rawValue)")
+            return nil
+        }
         // AXUIElement は CoreFoundation 型 (CFTypeID が AXUIElementGetTypeID と一致) なので
         // force cast で AXUIElement に落とす。AX API 契約上 kAXFocusedWindowAttribute の
         // 値は必ず AXUIElement を返すため、この cast は AX API 契約が破られない限り安全。
@@ -151,7 +161,13 @@ public final class FocusFlashObserver {
         let r1 = AXUIElementCopyAttributeValue(axWindow, kAXPositionAttribute as CFString, &posValue)
         let r2 = AXUIElementCopyAttributeValue(axWindow, kAXSizeAttribute as CFString, &sizeValue)
         guard r1 == .success, r2 == .success,
-              let posV = posValue, let sizeV = sizeValue else { return nil }
+              let posV = posValue, let sizeV = sizeValue else {
+            NSLog("""
+                [LaserGuide focus] position/size attribute failed: pid=\(procId) \
+                axErrorPosition=\(r1.rawValue) axErrorSize=\(r2.rawValue)
+                """)
+            return nil
+        }
 
         var cgPos = CGPoint.zero
         var cgSize = CGSize.zero

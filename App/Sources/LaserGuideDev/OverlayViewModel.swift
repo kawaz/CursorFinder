@@ -33,7 +33,10 @@ import LaserGuideCore
 /// DR-0004 の「描画は state 購読」を狭義に守るために Core を膨らませるより、App 層の VM に
 /// 明示的な入力口を用意する方が Phase 1 のコストに見合う (Core Action への昇格は Phase 2)。
 public struct PresentationClickEvent: Equatable, Sendable {
-    public enum Phase: Equatable, Sendable { case down, up }
+    /// 2026-07-10 実機フィードバック第 2 ラウンド #2: `drag` はボタンを押している間の位置更新。
+    /// down で表示開始したサークルの `point` だけを更新し、opacity は変えない
+    /// (= ドラッグ中は消えずカーソルに追従、離した位置から減衰が始まる)。
+    public enum Phase: Equatable, Sendable { case down, drag, up }
     public let phase: Phase
     public let point: LogicalPoint
     public init(phase: Phase, point: LogicalPoint) {
@@ -102,6 +105,12 @@ public final class OverlayViewModel: ObservableObject {
     private var inactivityWorkItem: DispatchWorkItem?
     private var pendingState: AppState?
     private var pendingMouseLocation: LogicalPoint?
+    /// 2026-07-10 レビュー指摘 major-1: `.drag` フェーズの point 更新も他の高頻度入力
+    /// (state / mouseLocation) と同じ 60Hz coalesce に合流させる。down/up は状態遷移の
+    /// レイテンシが体感に直結するため即時のまま、drag だけが event-rate @Published 発火を
+    /// 起こしていた (フィードバック#5 で確立した「@Published をイベントレートで発火させない」
+    /// 方針への違反)。
+    private var pendingClickDragPoint: LogicalPoint?
     private var flushTimer: Timer?
     private var clickFadeTimer: Timer?
     private var focusFlashFadeTimer: Timer?
@@ -149,6 +158,10 @@ public final class OverlayViewModel: ObservableObject {
             pendingMouseLocation = nil
             applyMouseLocationImmediately(loc)
         }
+        if let dragPoint = pendingClickDragPoint {
+            pendingClickDragPoint = nil
+            applyClickDragImmediately(dragPoint)
+        }
     }
 
     private func applyStateImmediately(_ state: AppState) {
@@ -178,26 +191,59 @@ public final class OverlayViewModel: ObservableObject {
         }
     }
 
+    /// coalesce された `.drag` point を実際に `clickCircle` へ反映する (60Hz flush からのみ呼ぶ)。
+    /// 表示中のサークルが無ければ何もしない (up 後に届いた drag は無視、既存の意図を保持)。
+    private func applyClickDragImmediately(_ point: LogicalPoint) {
+        guard let current = clickCircle else { return }
+        clickCircle = ClickCirclePresentation(point: point, opacity: current.opacity)
+    }
+
     /// プレゼンテーションモード時のクリックイベントを適用する。
-    /// - down: 現在の減衰タイマーを止めて initial opacity で表示開始
-    /// - up: opacity を clickFadeDuration にわたって 0 まで減衰、完了で clickCircle=nil
+    /// - down: 現在の減衰タイマーを止めて initial opacity で表示開始 (即時)
+    /// - drag: 既に表示中のサークルがあれば point だけ更新 (opacity 不変)。up 後の drag
+    ///   (= clickCircle が nil) は無視する — down を経ていないドラッグはサークル対象外。
+    ///   2026-07-10 レビュー指摘 major-1: OS のイベントレポートレートに比例した高頻度で
+    ///   飛んでくるため、down/up と違い即時代入せず 60Hz coalesce (pendingClickDragPoint +
+    ///   flush) に合流させる (フィードバック#5 の「@Published を event-rate で発火させない」
+    ///   方針との整合)。
+    /// - up: opacity を clickFadeDuration にわたって 0 まで減衰、完了で clickCircle=nil。
+    ///   減衰開始位置は最後に受け取った point (= down 直後の up ならその point、drag を
+    ///   経ていれば最後の drag point) になる。coalesce 未反映の pending drag point がある
+    ///   場合は fade 開始前に同期的に反映してから読む (取りこぼし防止)
     public func apply(presentationClick event: PresentationClickEvent) {
-        clickFadeTimer?.invalidate()
-        clickFadeTimer = nil
         switch event.phase {
         case .down:
+            pendingClickDragPoint = nil
+            clickFadeTimer?.invalidate()
+            clickFadeTimer = nil
             clickCircle = ClickCirclePresentation(point: event.point, opacity: clickInitialOpacity)
+        case .drag:
+            guard clickCircle != nil else { return }
+            pendingClickDragPoint = event.point
+            scheduleFlush()
         case .up:
+            // fade 開始位置が「最後の drag 位置」になる契約 (仕様コメント上記) を守るため、
+            // まだ flush されていない drag point があれば先に同期反映する。
+            if let dragPoint = pendingClickDragPoint {
+                pendingClickDragPoint = nil
+                applyClickDragImmediately(dragPoint)
+            }
+            clickFadeTimer?.invalidate()
+            clickFadeTimer = nil
             guard let current = clickCircle else { return }
             // 減衰: 30ms 刻みで initial opacity / (clickFadeDuration / step) 分ずつ減らす。
             let step: TimeInterval = 0.03
             let ticks = max(1, Int(clickFadeDuration / step))
             let delta = current.opacity / Double(ticks)
             var opacity = current.opacity
-            let point = current.point
             let timer = Timer(timeInterval: step, repeats: true) { [weak self] t in
                 guard let self else { t.invalidate(); return }
                 opacity -= delta
+                // 2026-07-10 レビュー指摘 minor-6: fade 中でも別ボタンの drag が届き得る
+                // (複数ボタン同時押し)。point を up 時点で capture した固定値ではなく毎 tick
+                // `clickCircle?.point` を読み直すことで、drag による位置更新を fade が
+                // 巻き戻さないようにする (drag が来なければ current.point のまま不変)。
+                let point = self.clickCircle?.point ?? current.point
                 if opacity <= 0 {
                     self.clickCircle = nil
                     t.invalidate()
@@ -212,7 +258,10 @@ public final class OverlayViewModel: ObservableObject {
     }
 
     /// プレゼンテーションモード off 遷移時に呼ぶ。減衰中でも即座にサークルを消す。
+    /// coalesce 待ちの drag point (`applyClickDragImmediately` は `clickCircle` nil で
+    /// no-op のため実害は無いが、次回 on 時に無駄な flush 処理を残さないため) も破棄する。
     public func clearPresentationClick() {
+        pendingClickDragPoint = nil
         clickFadeTimer?.invalidate()
         clickFadeTimer = nil
         clickCircle = nil
