@@ -25,6 +25,8 @@ struct LogicalPoint { var x, y: Double }   // CG グローバル論理座標 (px
 struct PhysicalPoint { var x, y: Double }  // 物理配置空間 (mm)
 ```
 
+- **物理空間の軸向きは論理座標と同一 (x 右、y 下)**。logical↔physical を向き保存 (正の scale、軸反転なし) の変換に保つことで、flip の混入をコンパイル時に近い形で排除する (2026-07-10 追記: v1 の永続データは y-up mm 空間なので、migration では Y 反転補正 `y' = -(y + height)` が必要)
+
 - 物理空間の単位は **mm**。モニタごとの pose (配置 translate + px→mm scale。scale は解像度と physical size から導出し、キャリブレーションで補正可能) で `logical ↔ physical` を**双方向に**変換する。逆変換 (physical → logical) を最初から実装する (V3 に欠けていて WarpTo が使えなかった)
 - **mm 情報が取れないディスプレイの fallback**: `CGDisplayScreenSize` は EDID 不備の機種やプロジェクタで 0 や不正値を返す。その場合は仮定 DPI (110dpi 相当) で暫定 scale を与え、キャリブレーション UI 上で「physical size 未取得・要手動補正」を明示する。レーザー直進性がこの値に依存するため、黙って仮定値のまま見せない
 - ワープ判定・エッジ接続・レーザーの直線性計算は物理空間で行い、OS へ返す直前に論理座標へ逆変換する
