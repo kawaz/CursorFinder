@@ -60,6 +60,26 @@ public struct TapHealth: Equatable, Hashable, Sendable {
     public static let healthy = TapHealth(isWarpDisabledByPermissionLoss: false)
 }
 
+/// フォーカスフラッシュの直近発火 (DR-0009 Phase A)。
+///
+/// - `displayId`: フォーカス先モニタの id。App 層は自 overlay がこの id に一致した時のみ縁を光らせる
+/// - `generation`: `.focusedDisplayChanged` を受けるたびに単調増加。連続発火 (Cmd-Tab 連打・
+///   同一モニタ内のアプリ切替) を「同じ視覚エフェクトを再発火」として区別するためのカウンタ。
+///   同じ `displayId` でも `generation` が進めば描画側は新規発火と扱う (DR-0009 「連続切替時は
+///   世代カウンタで上書き」)。Store は純関数なので時刻を持たず、フェード進行は描画層 (VM Timer)
+///   で管理する。
+///
+/// Phase B で `windowFrame: LogicalRect?` を追加し、ウィンドウ枠アウトラインの reducer 経路を
+/// 開ける想定 (拡張余地は Action.focusedDisplayChanged と対で開けておく)。
+public struct FocusFlashState: Equatable, Hashable, Sendable {
+    public var displayId: String
+    public var generation: UInt64
+    public init(displayId: String, generation: UInt64) {
+        self.displayId = displayId
+        self.generation = generation
+    }
+}
+
 /// アプリ設定 (Phase 1 の最小プレースホルダ)。Trigger/Judgement が公開しているデフォルト値と
 /// 揃えてあるので、設定未変更なら既存の幾何コアのデフォルト挙動と一致する。
 public struct AppConfiguration: Equatable, Hashable, Sendable {
@@ -118,6 +138,9 @@ public struct AppState: Equatable, Sendable {
     public var configuration: AppConfiguration
     public var calibration: CalibrationState
     public var tapHealth: TapHealth
+    /// フォーカスフラッシュ直近発火 (DR-0009 Phase A)。まだ一度も発火していなければ nil。
+    /// 描画層は generation の変化を検知して短時間ハイライトを立ち上げ、フェード自体は描画層で管理する。
+    public var focusFlash: FocusFlashState?
 
     public init(
         displays: [Display],
@@ -127,7 +150,8 @@ public struct AppState: Equatable, Sendable {
         currentMouse: MouseHistoryEntry? = nil,
         configuration: AppConfiguration = .default,
         calibration: CalibrationState = .idle,
-        tapHealth: TapHealth = .healthy
+        tapHealth: TapHealth = .healthy,
+        focusFlash: FocusFlashState? = nil
     ) {
         self.displays = displays
         self.userSegments = userSegments
@@ -138,6 +162,7 @@ public struct AppState: Equatable, Sendable {
         self.configuration = configuration
         self.calibration = calibration
         self.tapHealth = tapHealth
+        self.focusFlash = focusFlash
     }
 
     /// displays/userSegments を書き換えつつ tables を同期して再構築する。同一モジュール内の

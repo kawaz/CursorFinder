@@ -53,6 +53,22 @@ public struct ClickCirclePresentation: Equatable, Sendable {
     }
 }
 
+/// フォーカスフラッシュ (DR-0009 Phase A) の描画表現。overlay ごとに保持する。
+///
+/// Core (`FocusFlashState`) は「どのモニタに向けてフラッシュを立てたか」と「連続発火の識別用
+/// generation」だけを持ち、時刻・フェード進行は描画層 (VM) が管理する (DR-0004 の「Store は
+/// 純関数、時刻・非決定性を持ち込まない」を維持するため)。
+/// - `displayId`: フォーカス先のモニタ id。LaserOverlayView は自 display と一致した時のみ縁を描く
+/// - `opacity`: 立ち上がり直後は `initialOpacity`、時間経過で 0 まで減衰
+public struct FocusFlashPresentation: Equatable, Sendable {
+    public let displayId: String
+    public let opacity: Double
+    public init(displayId: String, opacity: Double) {
+        self.displayId = displayId
+        self.opacity = opacity
+    }
+}
+
 public final class OverlayViewModel: ObservableObject {
     @Published public var state: AppState
     @Published public var currentMouseLocation: LogicalPoint?
@@ -61,6 +77,10 @@ public final class OverlayViewModel: ObservableObject {
     @Published public var isMouseActive: Bool = false
     /// プレゼンテーションモード on 時のクリック可視化。off 時 / mouseUp 後の減衰完了時は nil。
     @Published public var clickCircle: ClickCirclePresentation?
+    /// フォーカスフラッシュ (DR-0009 Phase A) の現在描画状態。
+    /// state.focusFlash の generation 変化を検知して立ち上げ、focusFlashDuration にかけて減衰する。
+    /// 減衰完了時 / focus flash 機能 off 時は nil。
+    @Published public var focusFlash: FocusFlashPresentation?
 
     /// ポインタ移動停止からレーザーを消すまでの猶予 (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
     public var inactivityThreshold: TimeInterval = 0.3
@@ -73,15 +93,28 @@ public final class OverlayViewModel: ObservableObject {
     /// mouseDown 時のサークル初期不透明度。
     public var clickInitialOpacity: Double = 0.6
 
+    /// フォーカスフラッシュのフェード時間 (秒)。task 指示「~0.5s でフェードアウト」に沿う。
+    public var focusFlashDuration: TimeInterval = 0.5
+    /// フォーカスフラッシュの初期不透明度。0.6 前後にすることでシステム標準の accent 系ハイライトと
+    /// 近い体感になる (実機フィードバックで再調整余地あり)。
+    public var focusFlashInitialOpacity: Double = 0.6
+
     private var inactivityWorkItem: DispatchWorkItem?
     private var pendingState: AppState?
     private var pendingMouseLocation: LogicalPoint?
     private var flushTimer: Timer?
     private var clickFadeTimer: Timer?
+    private var focusFlashFadeTimer: Timer?
+    /// 直近で立ち上げた focus flash の generation。次回 apply(state:) 時に state.focusFlash?.generation
+    /// と比較し、増えていれば新規発火として立ち上げ直す (同一 displayId でも再発火する)。
+    private var lastFocusFlashGeneration: UInt64 = 0
 
     public init(initialState: AppState, initialMouse: LogicalPoint? = nil) {
         self.state = initialState
         self.currentMouseLocation = initialMouse
+        // 初期 state 時点で focusFlash が既にセットされていても VM 生成時に「見なかった発火」を
+        // 立ち上げないよう、last カウンタを synchronize しておく (通常は 0)。
+        self.lastFocusFlashGeneration = initialState.focusFlash?.generation ?? 0
     }
 
     public func apply(state: AppState) {
@@ -127,6 +160,14 @@ public final class OverlayViewModel: ObservableObject {
                 self.currentMouseLocation = cur
                 markActive()
             }
+        }
+        // DR-0009: state.focusFlash.generation が前回より進んでいれば新規発火として立ち上げる。
+        // 同一 displayId でも generation が進めば再発火する (連続切替時の Cmd-Tab 連打・
+        // 同一モニタ内アプリ切替を反映)。generation が変わらない state 更新
+        // (displayConfigurationChanged 等) では何もしない。
+        if let ff = state.focusFlash, ff.generation != lastFocusFlashGeneration {
+            lastFocusFlashGeneration = ff.generation
+            startFocusFlash(displayId: ff.displayId)
         }
     }
 
@@ -175,6 +216,49 @@ public final class OverlayViewModel: ObservableObject {
         clickFadeTimer?.invalidate()
         clickFadeTimer = nil
         clickCircle = nil
+    }
+
+    /// フォーカスフラッシュを立ち上げてフェードアウトさせる (DR-0009 Phase A)。
+    /// state 経由の generation 変化検知から呼ばれる内部関数。
+    ///
+    /// 減衰は clickCircle 側と同じ pattern: 30ms 刻みで `focusFlashDuration / step` 回に分けて
+    /// opacity を減らし、0 に達したら nil に戻す。SwiftUI の暗黙 animation ではなく AppKit Timer で
+    /// 明示的に段階更新するのは、キャリブレーション画面表示中の main run loop 占有下でも
+    /// 予測可能な速度で減衰させるため (プレゼンテーションクリックと同じ理由)。
+    private func startFocusFlash(displayId: String) {
+        focusFlashFadeTimer?.invalidate()
+        focusFlashFadeTimer = nil
+        focusFlash = FocusFlashPresentation(displayId: displayId, opacity: focusFlashInitialOpacity)
+
+        let step: TimeInterval = 0.03
+        let ticks = max(1, Int(focusFlashDuration / step))
+        let delta = focusFlashInitialOpacity / Double(ticks)
+        var opacity = focusFlashInitialOpacity
+        let capturedId = displayId
+        let timer = Timer(timeInterval: step, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            opacity -= delta
+            if opacity <= 0 {
+                self.focusFlash = nil
+                t.invalidate()
+                self.focusFlashFadeTimer = nil
+            } else {
+                self.focusFlash = FocusFlashPresentation(displayId: capturedId, opacity: opacity)
+            }
+        }
+        focusFlashFadeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// フォーカスフラッシュ機能 off 遷移時に呼ぶ。減衰中でも即座に消し、次回の generation 変化
+    /// でも state.focusFlash?.generation との差分検知が正しく行われるよう lastFocusFlashGeneration
+    /// は state の値に合わせておく (off 中の発火をカウントし、再 on 時に「見なかった 1 回」を
+    /// 再生しないため = 「off の間の発火は捨てる」を明示する)。
+    public func clearFocusFlash() {
+        focusFlashFadeTimer?.invalidate()
+        focusFlashFadeTimer = nil
+        focusFlash = nil
+        lastFocusFlashGeneration = state.focusFlash?.generation ?? 0
     }
 
     private func markActive() {

@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private var statusItem: NSStatusItem?
     private var warpToggleItem: NSMenuItem?
     private var presentationToggleItem: NSMenuItem?
+    private var focusFlashToggleItem: NSMenuItem?
     private var latencyInfoItem: NSMenuItem?
     private var warpEnabled: Bool = true
     /// プレゼンテーションモード (issue 2026-07-10-presentation-mode-capture-toggle):
@@ -36,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private var presentationModeEnabled: Bool = false
     /// プレゼンテーションモード on 時のみ有効な mouseDown/Up 監視 (VM への Action 配送用)。
     private var presentationClickMonitor: Any?
+    /// フォーカスフラッシュ (DR-0009 Phase A) のトグル。Phase A は新規機能で実機フィードバック待ち
+    /// なので既定 off (保守側)。既存 warpEnabled=true と対称にせず、presentationModeEnabled=false と
+    /// 同じ「オプトイン」の流儀にする。
+    private var focusFlashEnabled: Bool = false
+    /// on の間だけ生きるフォーカス変更購読 (AX + NSWorkspace)。off 時 / 権限失効時は nil。
+    private var focusFlashObserver: FocusFlashObserver?
 
     /// DR-0008: WKWebView キャリブレーション UI。メニューから開いたときに生成、閉じたら再生成。
     private var calibration: CalibrationWindowController?
@@ -114,6 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         permission.stopLaserOnly()
         stopDragPositionMonitor()
         stopPresentationClickMonitor()
+        focusFlashObserver?.stop()
+        focusFlashObserver = nil
     }
 
     // MARK: - Drag position monitor (#5)
@@ -268,6 +277,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         presentationToggle.state = presentationModeEnabled ? .on : .off
         menu.addItem(presentationToggle)
         self.presentationToggleItem = presentationToggle
+        // フォーカスフラッシュ (DR-0009 Phase A): アプリ切替時にフォーカス先モニタの縁を短時間
+        // ハイライト。既定 off (実機フィードバック待ち)。AX 権限なし時は disabled 表示。
+        let focusFlashToggle = NSMenuItem(
+            title: "フォーカスフラッシュ", action: #selector(toggleFocusFlash),
+            keyEquivalent: "")
+        focusFlashToggle.target = self
+        focusFlashToggle.state = focusFlashEnabled ? .on : .off
+        // 権限なしなら disabled + 状態は off 固定 (Phase A の degrade)。
+        if !PermissionMonitor.isTrusted(prompt: false) {
+            focusFlashToggle.isEnabled = false
+            focusFlashToggle.toolTip = "アクセシビリティ権限が必要です"
+        }
+        menu.addItem(focusFlashToggle)
+        self.focusFlashToggleItem = focusFlashToggle
         menu.addItem(.separator())
         // DR-0008: キャリブレーション画面を開く
         let calibItem = NSMenuItem(title: "キャリブレーション...", action: #selector(openCalibration), keyEquivalent: "k")
@@ -304,6 +327,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         presentationModeEnabled.toggle()
         sender.state = presentationModeEnabled ? .on : .off
         applyPresentationMode()
+    }
+
+    @objc private func toggleFocusFlash(_ sender: NSMenuItem) {
+        focusFlashEnabled.toggle()
+        sender.state = focusFlashEnabled ? .on : .off
+        applyFocusFlash()
+    }
+
+    /// focusFlashEnabled の値を反映する: observer 起動/停止 + 減衰中の描画クリア。
+    /// AppDelegate 全体では presentationMode と同じ流儀 (apply* 関数に集約) を守る。
+    private func applyFocusFlash() {
+        if focusFlashEnabled {
+            // 権限有無に関わらず起動を試みる (menu で権限なし時は disabled になっているが、
+            // 実行中の権限剥奪等の遷移で通ってしまうケースに備える)。
+            guard focusFlashObserver == nil else { return }
+            let observer = FocusFlashObserver(runtime: runtime)
+            observer.start()
+            focusFlashObserver = observer
+        } else {
+            focusFlashObserver?.stop()
+            focusFlashObserver = nil
+            for (_, vm) in overlayModelById { vm.clearFocusFlash() }
+        }
     }
 
     /// presentationModeEnabled の値を全 overlay に反映する: sharingType 切替 + click 監視の

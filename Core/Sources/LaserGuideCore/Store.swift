@@ -20,6 +20,8 @@ public enum Store {
             return reduceCalibration(state, calibrationAction)
         case let .settingsChanged(configuration):
             return reduceSettingsChanged(state, configuration: configuration)
+        case let .focusedDisplayChanged(displayId):
+            return reduceFocusedDisplayChanged(state, displayId: displayId)
         }
     }
 
@@ -204,6 +206,26 @@ public enum Store {
             next.calibration = .idle
             return (next, [])
         }
+    }
+
+    // ================================
+    // focusedDisplayChanged (DR-0009 Phase A)
+    // ================================
+
+    /// フォーカスフラッシュの reducer。
+    /// - 初回発火 (`focusFlash == nil`): generation=1 で新規セット
+    /// - 既存あり (同じ displayId): generation++ で上書き (同一モニタ内のアプリ切替でも再発火する)
+    /// - 既存あり (別 displayId): generation++ で displayId 差し替え (別モニタへの切替も再発火)
+    ///
+    /// generation を単調増加させることで、描画層 (VM) は `state.focusFlash?.generation` の変化のみを
+    /// 発火トリガーとして扱える (時刻を Store に持ち込まず、Store は純関数を保つ)。effect は発生しない。
+    private static func reduceFocusedDisplayChanged(
+        _ state: AppState, displayId: String
+    ) -> (AppState, [Effect]) {
+        var next = state
+        let previousGeneration = state.focusFlash?.generation ?? 0
+        next.focusFlash = FocusFlashState(displayId: displayId, generation: previousGeneration &+ 1)
+        return (next, [])
     }
 
     // ================================

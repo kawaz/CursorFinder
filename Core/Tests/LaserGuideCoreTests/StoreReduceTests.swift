@@ -499,4 +499,61 @@ final class StoreReduceTests: XCTestCase {
             afterNoOpReconfig.userSegments.contains { $0.displayId == "A" && $0.side == .right },
             "既存モニタ同士の再構成では、ユーザが明示削除した userSegments を自動で復活させない")
     }
+
+    // ================================
+    // focusedDisplayChanged (DR-0009 Phase A)
+    // ================================
+    //
+    // 検証したいこと (DR-0009 決定 2 「連続切替時は世代カウンタで上書き」の輪郭):
+    //   (a) 初回発火で focusFlash が生成される (nil → セット、generation=1)
+    //   (b) 同じ displayId への連続発火でも generation が単調増加する (= 同一モニタ内のアプリ
+    //       切替でも視覚エフェクトを再発火できる、決定 5 の Phase A 要件と対応)
+    //   (c) 別 displayId への切替で displayId が差し替わり generation も進む
+    //   (d) effect は発生しない (フォーカスフラッシュは描画層のみの状態遷移、Store は純関数を保つ)
+
+    /// (a) 初回発火: focusFlash が nil の状態から `.focusedDisplayChanged(A)` を投入すると、
+    ///     `FocusFlashState(displayId: "A", generation: 1)` にセットされる (generation は 1 開始)。
+    ///     effect は発生しない。
+    func testFocusedDisplayChangedInitialFiringSetsGenerationOne() {
+        var state = AppState.initial(displays: [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+        ])
+        XCTAssertNil(state.focusFlash, "初期状態は未発火")
+
+        let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: "A"))
+        XCTAssertEqual(effects, [], "focusedDisplayChanged は描画専用の状態遷移で effect を出さない")
+        XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", generation: 1))
+        state = next
+    }
+
+    /// (b) 同一 displayId への連続発火で generation が単調増加する。
+    ///     同一モニタ内でアプリを切り替えた場合も「軽く再発火」できる仕様 (task 指示) の固定。
+    func testFocusedDisplayChangedSameDisplayIncrementsGeneration() {
+        var state = AppState.initial(displays: [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+        ])
+        for expected in UInt64(1)...UInt64(4) {
+            let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: "A"))
+            XCTAssertEqual(effects, [])
+            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", generation: expected))
+            state = next
+        }
+    }
+
+    /// (c) 別 displayId への切替で displayId が差し替わり、かつ generation は前回から進む
+    ///     (直前が A の generation=2 なら、B への切替は generation=3)。連続切替の識別性を担保する。
+    func testFocusedDisplayChangedCrossDisplaySwitchIncrementsGenerationAndSwapsId() {
+        var state = AppState.initial(displays: [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+            Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity),
+        ])
+        // A → A → B → A の順で切り替え。generation は 1, 2, 3, 4 と単調増加。
+        let sequence: [(String, UInt64)] = [("A", 1), ("A", 2), ("B", 3), ("A", 4)]
+        for (id, expectedGen) in sequence {
+            let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: id))
+            XCTAssertEqual(effects, [])
+            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: id, generation: expectedGen))
+            state = next
+        }
+    }
 }

@@ -48,6 +48,35 @@ struct LaserOverlayView: View {
             // 非描画。VM 側で opacity が段階的に減衰するので、view はそのまま fill opacity として使う
             // (SwiftUI 標準の暗黙 animation に頼らず、AppKit 側 Timer 由来の値変化で見せる)。
             clickCircleView
+
+            // フォーカスフラッシュ (DR-0009 Phase A): フォーカス先モニタの縁を短時間ハイライト。
+            // 自 display と focusFlash.displayId が一致した時のみ描画、それ以外の overlay では nil
+            // で非描画。opacity は VM 側 Timer で減衰済み、view は fill/stroke opacity として使う。
+            focusFlashView
+        }
+    }
+
+    /// フォーカスフラッシュ描画 (DR-0009 Phase A): 対象モニタの内側に向けたブルー系グローで縁を強調。
+    /// 厚み・色の根拠は clickCircle と同様の実機フィードバックで再調整前提の初期値:
+    /// - 色: `systemBlue` (macOS のアクセント色に近く、システムのフォーカス強調と親和性が高い)
+    /// - 厚み: 内側 24px の枠 + 8px blur。ウィンドウ枠ハイライト (Phase B) と重なった時にも
+    ///   モニタ縁の方が薄く広く光る差別化ができる
+    /// - フェード: VM 側 focusFlashDuration=0.5s (task 指示 ~0.5s に沿う)
+    @ViewBuilder
+    private var focusFlashView: some View {
+        if let flash = model.focusFlash, flash.displayId == displayId,
+           let selfDisplay = model.state.displays.first(where: { $0.id == displayId })
+        {
+            let width = selfDisplay.logicalBounds.maxX - selfDisplay.logicalBounds.minX
+            let height = selfDisplay.logicalBounds.maxY - selfDisplay.logicalBounds.minY
+            let strokeThickness: CGFloat = 24
+            Rectangle()
+                .inset(by: strokeThickness / 2)
+                .stroke(Color.blue.opacity(flash.opacity), lineWidth: strokeThickness)
+                .blur(radius: 8)
+                .frame(width: width, height: height)
+                .position(x: width / 2, y: height / 2)
+                .allowsHitTesting(false)
         }
     }
 
