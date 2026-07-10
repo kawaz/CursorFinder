@@ -15,9 +15,12 @@ final class V1MigrationTests: XCTestCase {
     private var hardwareIdA: String { "\(vendorA)-\(modelA)-\(serialA)" }
     private var hardwareIdB: String { "\(vendorB)-\(modelB)-\(serialB)" }
 
-    /// v1 のモニタ 1 台構成 (隣接 = edgeZone 無し) を migrate すると、pose の translate に
-    /// v1 position がそのまま写り (Y 軸反転補正は未実装、V1Migration.swift 冒頭コメント参照)、
-    /// userSegments は空になること。
+    /// v1 のモニタ 1 台構成 (隣接 = edgeZone 無し) を migrate すると、pose の translate は
+    /// DR-0005 (2026-07-10 追記) の Y 軸反転補正 `y_down = -(position.y + size.height)` を経て
+    /// v3 (y-down) の値になり、userSegments は空になること。
+    ///
+    /// position=(10, 20), size=(500, 300) (bottom-left, y-up) の場合:
+    /// top edge の y-up 座標 = 20 + 300 = 320、反転して y_down = -320。x は補正不要でそのまま。
     func testMigrateSingleDisplayWithNoEdgeZonesProducesEmptyUserSegments() throws {
         let v1Config = V1DisplayConfiguration(
             displays: [
@@ -34,11 +37,42 @@ final class V1MigrationTests: XCTestCase {
         XCTAssertEqual(result?.displays.count, 1)
         let display = try XCTUnwrap(result?.displays.first)
         XCTAssertEqual(display.hardwareId, hardwareIdA)
-        XCTAssertEqual(display.pose.translate.x, 10)
-        XCTAssertEqual(display.pose.translate.y, 20)
+        XCTAssertEqual(display.pose.translate.x, 10, "x は左右反転がないため補正不要")
+        XCTAssertEqual(display.pose.translate.y, -320, "y_down = -(20 + 300)")
         XCTAssertEqual(display.pose.scaleX, 1.0, "v1 は px 解像度を保存しないため scale は恒等の暫定値")
         XCTAssertEqual(display.pose.scaleY, 1.0)
         XCTAssertEqual(display.userSegments, [])
+    }
+
+    /// DR-0005 の Y 軸反転補正が「上下関係の意味」を保つことを固定する核心テスト。
+    /// v1 (y-up) で上に配置されたモニス (position.y が大きい) は、v3 (y-down) でも
+    /// 引き続き「上」(translate.y が小さい) でなければならない。符号だけ合わせて
+    /// 上下関係が逆転していないか (最もありがちな反転バグ) をここで検出する。
+    func testMigrateYAxisFlipPreservesTopBottomOrderingForStackedDisplays() throws {
+        // v1 (y-up, bottom-left corner): bottomDisplay は y=0 (下)、topDisplay は y=300 (上、
+        // bottomDisplay の真上に隙間なく積まれている想定: bottomDisplay.position.y + height == topDisplay.position.y)。
+        let bottomDisplay = V1PhysicalDisplayLayout(
+            identifier: V1DisplayIdentifier(vendorID: vendorA, modelID: modelA, serialNumber: serialA),
+            position: V1PhysicalPoint(x: 0, y: 0), size: V1PhysicalSize(width: 500, height: 300))
+        let topDisplay = V1PhysicalDisplayLayout(
+            identifier: V1DisplayIdentifier(vendorID: vendorB, modelID: modelB, serialNumber: serialB),
+            position: V1PhysicalPoint(x: 0, y: 300), size: V1PhysicalSize(width: 500, height: 200))
+        let v1Config = V1DisplayConfiguration(
+            displays: [bottomDisplay, topDisplay],
+            timestamp: Date(timeIntervalSinceReferenceDate: 0), edgeZones: [], edgeZonePairs: [])
+        let data = try JSONEncoder().encode(v1Config)
+
+        let result = V1Migration.migrate(v1Data: data, currentPixelSizeByHardwareId: [:])
+        let bottomPose = try XCTUnwrap(result?.displays.first { $0.hardwareId == hardwareIdA }?.pose)
+        let topPose = try XCTUnwrap(result?.displays.first { $0.hardwareId == hardwareIdB }?.pose)
+
+        // y-down (v3) では「上」ほど y が小さい。v1 で上だった topDisplay が
+        // v3 でも bottomDisplay より y が小さい (= 上) ままであることを固定する。
+        XCTAssertLessThan(topPose.translate.y, bottomPose.translate.y,
+                           "v1 で上に配置されたモニタは v3 (y-down) でも y が小さい (上) 側でなければならない")
+        // 具体値でも固定する: bottom は y_down = -(0+300) = -300、top は y_down = -(300+200) = -500。
+        XCTAssertEqual(bottomPose.translate.y, -300)
+        XCTAssertEqual(topPose.translate.y, -500)
     }
 
     /// v1 の 2 台構成 + A.right <-> B.left の edgeZonePair (0.25-0.75 の正規化区間) を、

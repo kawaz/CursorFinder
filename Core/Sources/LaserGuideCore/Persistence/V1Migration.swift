@@ -4,21 +4,26 @@
 // 変換して保存する。v2 prefix (`LaserGuide.v2.Workspace.*`) は未リリースのため migration
 // 対象外 (DR-0007 背景: 「開発者ローカルのみ」)。
 //
-// 設計上の既知の制約 (report 必読、以下 2 点は独断で確定させず未検証の仮定として明示する):
+// 設計上の既知の制約 (report 必読):
 //
-// 1. **pose.scale の再現不能性**: v1 PhysicalDisplayLayout は position/size を mm でのみ持ち、
-//    px 解像度を保存しない。DR-0005 決定 2 は「scale は解像度と physical size から導出し、
-//    キャリブレーションで補正可能」としており、v1 データだけでは正しい scaleX/scaleY を
-//    再構築できない。ここでは scaleX=scaleY=1.0 (恒等) を暫定値として置く。
-//    App 配線時、migration 直後の初回起動で現在の解像度から実 scale を再計算し pose を
-//    上書きする処理が別途必要 (Persistence 層の外、Swift App 側の責務として報告する)。
-// 2. **物理空間の Y 軸向き未検証**: v1 の position は「Bottom-left corner」
+// 1. **pose.scale の再現不能性 (2026-07-10 team-lead 承認済み)**: v1 PhysicalDisplayLayout は
+//    position/size を mm でのみ持ち、px 解像度を保存しない。DR-0005 決定 2 は「scale は
+//    解像度と physical size から導出し、キャリブレーションで補正可能」としており、v1 データ
+//    だけでは正しい scaleX/scaleY を再構築できない。ここでは scaleX=scaleY=1.0 (恒等) を
+//    暫定値として置く。**読み込み側 (App) は migration 結果を使う前に現在の解像度から実 scale
+//    を再導出する契約**であり、この暫定値のまま warp 判定に使ってはならない
+//    (Persistence 層の外、Swift App 側の責務)。
+// 2. **物理空間の Y 軸反転補正**: DR-0005 (2026-07-10 追記) により物理 mm 空間の軸向きは
+//    「論理座標と同一の y-down」と確定した。v1 の position は「Bottom-left corner」
 //    (v1 コメント原文、DisplayIdentifier.swift:25) で、NSScreen 座標系 (y-up) の adjacency から
 //    BFS 算出されている (LaserGuide.v1.backup/ViewModels/CalibrationViewModel.swift:223-243)。
-//    v3 の物理空間 (PhysicalPoint) が同じ向きか、CG 論理座標 (y-down) と揃えた向きかは
-//    DR-0005 が明記していない。ここでは position をそのまま translate として使う単純化変換を
-//    採用しており、Y 軸反転補正は行っていない。実機データでの round-trip 検証が必要
-//    (DR-0007「検証の輪郭」参照、既存 API/DR の記述不足として report に明記する)。
+//    v1 の position (bottom-left, y-up) を v3 の translate (top-left 相当, y-down) に変換するには
+//    以下の 2 段の変換が必要:
+//      (a) bottom-left → top-left: y-up のまま top edge の y 座標を求める = `position.y + height`
+//          (y-up は値が大きいほど上なので、bottom より height 分上が top)
+//      (b) y-up → y-down: 軸を反転する = `-(...)`
+//    合成すると `y_down = -(position.y + size.height)`。x は左右反転がないため補正不要
+//    (`x_down = position.x` のまま)。
 import Foundation
 
 /// migration 時に「現在の解像度」を外部から与えるための px サイズ。v1 の EdgeZone は
@@ -53,12 +58,13 @@ public enum V1Migration {
         }
 
         // hardwareId (= V1DisplayIdentifier.stringRepresentation) ごとの pose。
-        // 決定 1 の既知の制約: scale は恒等 (1.0) の暫定値 (上記ファイルコメント参照)。
+        // scale は恒等 (1.0) の暫定値、y は Y 軸反転補正済み (上記ファイルコメント参照)。
         var poseByHardwareId: [String: DisplayPose] = [:]
         for layout in v1Config.displays {
             let hardwareId = layout.identifier.stringRepresentation
+            let yDown = -(layout.position.y + layout.size.height)
             poseByHardwareId[hardwareId] = DisplayPose(
-                translate: PhysicalPoint(x: layout.position.x, y: layout.position.y),
+                translate: PhysicalPoint(x: layout.position.x, y: yDown),
                 scaleX: 1.0, scaleY: 1.0
             )
         }
