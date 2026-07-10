@@ -12,13 +12,19 @@
 //   ポインタ移動が停止したら inactivityThreshold 経過後にレーザーを非表示にする
 //   (v1 の debounce 0.3s と同等)。位置変化時のみ debounce をリセットして再表示。
 //
-// 2026-07-10 第 2 ラウンド フィードバック #5 (描画更新の 60Hz 合流):
+// 2026-07-10 第 2 ラウンド フィードバック #5 (描画更新のスロットル合流):
 //   tap 経由 (apply(state:)) も drag monitor 経由 (apply(mouseLocation:)) も、OS のイベント
 //   レポートレートに比例した高頻度で呼ばれうる。毎回 @Published を発火すると SwiftUI の
 //   再評価コストがイベントレートに比例して積み重なり、ドラッグ操作の体感が重くなる
 //   (kawaz 実機報告: レーザー非表示中でもドラッグが重かった → @Published の発火自体が
-//   コストの主因という仮説)。両経路とも「最新値を保持するだけ」の軽い代入にとどめ、
-//   実際の @Published 反映は 16ms (60Hz) ごとの coalesce タイマーでまとめて行う。
+//   コストの主因という仮説)。
+//
+// 2026-07-10 第 3 ラウンド (kawaz 裁定「スロットルは即値で使う一択」):
+//   リーディング+トレーリングエッジ型スロットル。前回反映から flushInterval 以上空いた入力は
+//   **即時反映** (体感遅延を足さない)。interval 内に続く入力は最新値だけを保持し、interval の
+//   残り時間で 1 回だけ trailing 反映する (中間値は捨てる、キューは作らない)。
+//   トレーリングオンリー (全入力を一律 16ms 待たせる) は静止→動き出しの初動にまで遅延を
+//   足すので採らない。
 import Foundation
 import AppKit
 import Combine
@@ -111,6 +117,9 @@ public final class OverlayViewModel: ObservableObject {
     /// 起こしていた (フィードバック#5 で確立した「@Published をイベントレートで発火させない」
     /// 方針への違反)。
     private var pendingClickDragPoint: LogicalPoint?
+    /// 前回 flush の時刻 (systemUptime 秒)。リーディングエッジ判定 (前回から interval 以上
+    /// 空いていれば即時反映) に使う。初期値 -∞ 相当で最初の入力は必ず即時反映になる。
+    private var lastFlushAt: TimeInterval = -.greatestFiniteMagnitude
     private var flushTimer: Timer?
     private var clickFadeTimer: Timer?
     private var focusFlashFadeTimer: Timer?
@@ -136,9 +145,19 @@ public final class OverlayViewModel: ObservableObject {
         scheduleFlush()
     }
 
+    /// リーディング+トレーリングエッジ型スロットルの入口 (第 3 ラウンド裁定「即値で使う一択」)。
+    /// - 前回 flush から flushInterval 以上経過 → その場で flush (リーディングエッジ、遅延ゼロ)
+    /// - interval 内 → 残り時間の one-shot timer を 1 個だけ仕掛ける (トレーリングエッジ)。
+    ///   タイマー稼働中の追加入力は pending 値の上書きだけで済む (中間値は捨てる)
     private func scheduleFlush() {
         guard flushTimer == nil else { return }
-        let timer = Timer(timeInterval: flushInterval, repeats: false) { [weak self] _ in
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - lastFlushAt
+        if elapsed >= flushInterval {
+            flush()
+            return
+        }
+        let timer = Timer(timeInterval: flushInterval - elapsed, repeats: false) { [weak self] _ in
             self?.flush()
         }
         flushTimer = timer
@@ -149,7 +168,9 @@ public final class OverlayViewModel: ObservableObject {
     }
 
     private func flush() {
+        flushTimer?.invalidate()
         flushTimer = nil
+        lastFlushAt = ProcessInfo.processInfo.systemUptime
         if let s = pendingState {
             pendingState = nil
             applyStateImmediately(s)

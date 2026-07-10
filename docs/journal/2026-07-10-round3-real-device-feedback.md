@@ -45,6 +45,26 @@ kawaz 実機 (LG 上 + 内蔵 下 構成、`swift run laserguide-dev` debug ビ�
   流す。パフォーマンス制御は VM 側 coalesce (トレーリングエッジ間引き) に一元化 — monitor
   closure の仕事は CG 変換 + pending 上書きだけで、@Published 発火はイベントレートに比例しない
 
+## .app (release ビルド) の追加観測
+
+- **tap レイテンシ (release)**: `[latency] n=3474 total=3474 p50=16.6μs p95=89.7μs p99=188.6μs max=3156.9μs`
+  — debug (p50=156μs) の約 1/10。DR-0004 基準線は release 側のこの値を正とする
+- **TCC の罠**: ad-hoc .app は既存 LaserGuide エントリ (配布版 v0.12.1) が残っていると
+  権限が効かず、リストから − で削除 → + で追加 → アプリ再起動が必要 (runbook に手順化)
+- **ズレ再報告は古いバイナリ**: kawaz が確認した .app は Y 修正 (b2af868) より前のビルド。
+  修正込みで build し直して再確認する
+- **fps 低下 + 停止後にレーザーが遅れて動く (未決)**: VM スロットルにはキューが無い
+  (最新値 1 個 + one-shot timer) ため、遅延再生の犯人は別。仮説は「tap が main run loop
+  駆動のため、main が混むと mach port 側にイベントが滞留 → 停止後に drain されて再生される」。
+  第 3 ラウンドのスロットル改善 (下記) 後の新ビルドで再観測して切り分ける
+
+## スロットルをリーディング+トレーリング型に変更 (kawaz 裁定「即値で使う一択」)
+
+旧実装はトレーリングオンリー (全入力を一律 16ms 待たせる) で、静止→動き出しの初動にも
+人工遅延が乗っていた。変更後: 前回反映から interval 以上空いた入力は**即時反映**、interval
+内の後続は最新値だけを trailing 反映 (中間値は捨てる、キュー無し)。OverlayViewModelTests を
+新仕様で書き直し。
+
 ## 議論メモ (裁定待ち・次ラウンド入口)
 
 - **キャリブレーションの次元**: 現行モデルは 2D (物理 mm 平面、pose = translate)。kawaz から

@@ -22,59 +22,61 @@ final class OverlayViewModelTests: XCTestCase {
         return state
     }
 
-    /// apply(mouseLocation:) を呼んだ直後は @Published (currentMouseLocation/isMouseActive) が
-    /// まだ更新されない (= 即時発火しない、coalesce タイマー待ちであることの核心)。
-    func testApplyMouseLocationIsCoalescedNotImmediate() {
+    /// リーディングエッジ (第 3 ラウンド裁定「即値で使う一択」): 前回反映から flushInterval 以上
+    /// 空いた入力 (ここでは VM 生成後の最初の入力) は、タイマーを待たず**その場で反映**される。
+    /// 静止→動き出しの初動に人工遅延を足さないことの固定。
+    func testFirstMouseLocationAppliesImmediatelyOnLeadingEdge() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
 
         vm.apply(mouseLocation: LogicalPoint(x: 100, y: 100))
-        XCTAssertNil(vm.currentMouseLocation, "flush 前は反映されない (即時 @Published しない)")
-        XCTAssertFalse(vm.isMouseActive, "flush 前は active にもならない")
-
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
-        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 100, y: 100), "flush 後に反映される")
-        XCTAssertTrue(vm.isMouseActive, "位置が変わったので active になる")
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 100, y: 100), "初回入力は即時反映")
+        XCTAssertTrue(vm.isMouseActive, "位置が変わったので即 active になる")
     }
 
-    /// 1 flush interval 内に複数回 apply(mouseLocation:) しても、反映されるのは最後の値だけ
-    /// (= 高頻度呼び出しを 1 回の @Published にまとめるのが coalesce の本来の目的)。
+    /// トレーリングエッジ (スロットル本体): 直前の反映から interval 内に続く入力は即時反映されず、
+    /// 最新値だけが interval 経過後の 1 回の flush でまとめて反映される (中間値は捨てる、
+    /// キューに積まない = 高頻度呼び出しでも @Published 発火はレート上限を超えない)。
     func testRapidMouseLocationUpdatesWithinOneIntervalCollapseToLatestValue() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.05
 
-        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
-        vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
-        vm.apply(mouseLocation: LogicalPoint(x: 3, y: 3))
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))   // リーディングエッジで即時反映
+        vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))   // interval 内 → pending (捨てられる)
+        vm.apply(mouseLocation: LogicalPoint(x: 3, y: 3))   // interval 内 → pending を上書き
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 1, y: 1),
+                       "interval 内の後続入力は即時反映されない (最初の値のまま)")
 
         let exp = expectation(description: "flush")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { exp.fulfill() }
         wait(for: [exp], timeout: 1.0)
 
-        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 3, y: 3), "flush 後に反映されるのは最後の値のみ")
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 3, y: 3),
+                       "トレーリング flush で反映されるのは最後の値のみ (中間値 (2,2) は捨てられる)")
     }
 
-    /// apply(state:) も同じ coalesce タイマーに乗る。呼んだ直後は state/currentMouseLocation とも
-    /// 未反映で、flush 後にまとめて反映される (tap 経由の高頻度更新も同じ経路を通ることの固定)。
-    func testApplyStateIsCoalescedAndActivatesOnPositionChange() {
+    /// apply(state:) も同じスロットルに乗る (tap 経由の高頻度更新も同じ経路を通ることの固定)。
+    /// リーディングエッジで初回は即時、interval 内の後続 state は最新だけが trailing 反映。
+    func testApplyStateIsThrottledAndActivatesOnPositionChange() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
 
         let moved = makeState(mouse: LogicalPoint(x: 500, y: 500))
         vm.apply(state: moved)
-        XCTAssertNil(vm.currentMouseLocation, "flush 前は反映されない")
-        XCTAssertFalse(vm.isMouseActive)
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 500, y: 500), "初回 state は即時反映")
+        XCTAssertTrue(vm.isMouseActive)
+        XCTAssertEqual(vm.state.currentMouse?.point, LogicalPoint(x: 500, y: 500))
+
+        // interval 内の後続 state は即時反映されず、trailing でまとめて反映される
+        let moved2 = makeState(mouse: LogicalPoint(x: 600, y: 600))
+        vm.apply(state: moved2)
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 500, y: 500), "interval 内は未反映")
 
         let exp = expectation(description: "flush")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
         wait(for: [exp], timeout: 1.0)
 
-        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 500, y: 500))
-        XCTAssertTrue(vm.isMouseActive)
-        XCTAssertEqual(vm.state.currentMouse?.point, LogicalPoint(x: 500, y: 500))
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 600, y: 600), "trailing flush で最新 state が反映")
     }
 
     /// state 更新のうちマウス位置が変化しないもの (displayConfigurationChanged 等) は、
@@ -131,33 +133,36 @@ final class OverlayViewModelTests: XCTestCase {
         XCTAssertNil(vm.clickCircle, "clickFadeDuration 経過後に clickCircle=nil に戻る")
     }
 
-    /// 2026-07-10 第 2 ラウンド #2 + レビュー major-1: down 後の drag はサークルの point だけを
-    /// 更新し opacity は変えない (= ボタンを押している間カーソルに追従し続ける)。ただし drag は
-    /// OS のイベントレポートレートで高頻度に届くため、down/up (状態遷移、即時反映) と違い
-    /// state/mouseLocation と同じ coalesce に合流する仕様: 呼んだ瞬間には反映されず、
-    /// 1 interval 内の複数 drag は flush 時に最後の値だけが残る (トレーリングエッジ間引き)。
-    func testPresentationClickDragUpdatesPointViaCoalesceWhileKeepingOpacity() {
+    /// 2026-07-10 第 2 ラウンド #2 + 第 3 ラウンド裁定: down 後の drag はサークルの point だけを
+    /// 更新し opacity は変えない (= ボタンを押している間カーソルに追従し続ける)。drag は OS の
+    /// イベントレポートレートで高頻度に届くため state/mouseLocation と同じスロットルに合流する:
+    /// リーディングエッジで最初の drag は即時、interval 内の後続は最新値だけが trailing 反映
+    /// (中間値は捨てる)。
+    func testPresentationClickDragUpdatesPointViaThrottleWhileKeepingOpacity() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
         vm.clickInitialOpacity = 0.6
-        // down は即時反映 (表示開始のレイテンシが体感に直結するため coalesce に乗せない)
+        // down はスロットルを経由しない直接代入 (表示開始のレイテンシを最小化)
         vm.apply(presentationClick: PresentationClickEvent(
             phase: .down, point: LogicalPoint(x: 10, y: 20)))
         XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 10, y: 20))
         XCTAssertEqual(vm.clickCircle?.opacity, 0.6)
 
-        // 1 interval 内に複数 drag: 直後はまだ down の位置のまま (即時 @Published しない)
+        // 最初の drag はリーディングエッジで即時反映
         vm.apply(presentationClick: PresentationClickEvent(
             phase: .drag, point: LogicalPoint(x: 300, y: 400)))
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 300, y: 400), "初回 drag は即時反映")
+
+        // interval 内の後続 drag は pending 上書きのみ → trailing flush で最後の値が反映
         vm.apply(presentationClick: PresentationClickEvent(
             phase: .drag, point: LogicalPoint(x: 500, y: 600)))
-        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 10, y: 20), "flush 前は反映されない")
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 300, y: 400), "interval 内は未反映")
 
         let exp = expectation(description: "flush")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
         wait(for: [exp], timeout: 1.0)
 
-        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 500, y: 600), "flush 後、最後の drag 位置だけが反映される")
+        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 500, y: 600), "trailing flush で最後の drag 位置が反映")
         XCTAssertEqual(vm.clickCircle?.opacity, 0.6, "drag では opacity が変わらない")
     }
 
@@ -211,10 +216,10 @@ final class OverlayViewModelTests: XCTestCase {
 
     // MARK: - フォーカスフラッシュ (DR-0009 Phase A)
 
-    /// state.focusFlash が nil→非 nil に遷移すると、coalesce 経由でも focusFlash が initial
+    /// state.focusFlash が nil→非 nil に遷移すると、スロットル経由でも focusFlash が initial
     /// opacity で立ち上がる (= applyStateImmediately が generation 変化を検知して startFocusFlash
-    /// を呼ぶ)。
-    func testFocusFlashRisesOnStateFocusChangeAfterFlush() {
+    /// を呼ぶ)。初回 state はリーディングエッジで即時反映される。
+    func testFocusFlashRisesOnStateFocusChange() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
         vm.focusFlashInitialOpacity = 0.6
@@ -223,13 +228,8 @@ final class OverlayViewModelTests: XCTestCase {
         var next = makeState(mouse: nil)
         next.focusFlash = FocusFlashState(displayId: "A", generation: 1)
         vm.apply(state: next)
-        XCTAssertNil(vm.focusFlash, "flush 前は反映されない")
 
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
-        XCTAssertNotNil(vm.focusFlash, "flush 後に立ち上がる")
+        XCTAssertNotNil(vm.focusFlash, "初回 state はリーディングエッジで即時立ち上がる")
         XCTAssertEqual(vm.focusFlash?.displayId, "A")
         // Timer 減衰は非同期なので上限で確認 (立ち上がり直後は initial に近い)
         XCTAssertGreaterThan(vm.focusFlash?.opacity ?? -1, 0.3)
