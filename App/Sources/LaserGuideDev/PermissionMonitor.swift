@@ -24,11 +24,11 @@ public final class PermissionMonitor {
     private var monitor: Any?
 
     /// レーザー描画のみ mode: NSEvent global monitor でマウス位置を購読して viewModel に流す。
-    /// NSEvent.mouseLocation は y-up bottom-left なので main NSScreen の高さで CG y-down に変換する。
+    /// NSEvent.mouseLocation は y-up bottom-left なので primary NSScreen の高さで CG y-down に変換する。
     public func startLaserOnly(onMove: @escaping (LogicalPoint) -> Void) {
         stopLaserOnly()
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged]) { ev in
-            let cg = Self.nsScreenPointToCG(ev.locationInWindow == .zero ? NSEvent.mouseLocation : NSEvent.mouseLocation)
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged]) { _ in
+            let cg = Self.nsScreenPointToCG(NSEvent.mouseLocation)
             onMove(LogicalPoint(x: Double(cg.x), y: Double(cg.y)))
         }
     }
@@ -38,10 +38,20 @@ public final class PermissionMonitor {
         monitor = nil
     }
 
-    /// NSEvent y-up (bottom-left, main NSScreen 基準) → CG y-down (top-left, main CGDisplay 基準)。
-    /// DR-0005 の変換式 `cgY = mainHeight - nsY` (main NSScreen の frame.height を使う)。x は同じ。
+    /// NSEvent y-up (bottom-left) → CG y-down (top-left)。
+    /// DR-0005 の変換式 `cgY = primaryHeight - nsY` (x は同じ)。
+    ///
+    /// 基準高さは **primary スクリーン (= NSScreen.screens.first、Cocoa 座標原点 (0,0) を持つ画面)**
+    /// でなければならない。`NSScreen.main` は「キーボードフォーカスのあるウィンドウのスクリーン」で
+    /// あり座標原点とは無関係 — 2026-07-10 実機第 3 ラウンド #2 で、フォーカス画面と primary の
+    /// 高さ差の分だけクリックサークルが下にズレる bug の原因だった。
     static func nsScreenPointToCG(_ nsPoint: NSPoint) -> CGPoint {
-        let mainHeight = NSScreen.main?.frame.height ?? 0
-        return CGPoint(x: nsPoint.x, y: mainHeight - nsPoint.y)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return nsScreenPointToCG(nsPoint, primaryHeight: primaryHeight)
+    }
+
+    /// 変換式の純関数部 (テスト用に高さを注入可能)。
+    static func nsScreenPointToCG(_ nsPoint: NSPoint, primaryHeight: CGFloat) -> CGPoint {
+        CGPoint(x: nsPoint.x, y: primaryHeight - nsPoint.y)
     }
 }

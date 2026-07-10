@@ -76,15 +76,13 @@ swift run laserguide-dev
   (レーザーは NSEvent monitor 経由の fallback へ切り替わらないので描画は止まる、Phase 2 課題)。
 - **ウィンドウドラッグ中もカーソルを追う**: tap の eventsOfInterest は mouseMoved
   のみに絞ってあり、ドラッグ系イベント (leftMouseDragged / rightMouseDragged /
-  otherMouseDragged) は OS へ素通しする (2026-07-10 フィードバック #5)。レーザーが
-  表示中 (直近 0.3 秒以内にマウス移動があった) のドラッグでは、NSEvent global monitor
-  経由で overlay がポインタ位置を拾い続けるので描画が追従する。レーザーが非表示
-  (アイドルフェード後) の間に始まったドラッグは追跡自体をスキップする (無関係な
-  ウィンドウ操作である可能性が高いため、CG 変換・overlay 走査のコストを払わない)。
-  view への反映 (tap 経由・drag monitor 経由とも) は 60Hz (16ms) の coalesce タイマーに
-  まとめられ、イベントレートに比例して SwiftUI 再描画コストが増えないようにしている
-  (2026-07-10 第 2 ラウンド #5: 「レーザー非表示中でもドラッグが重い」という実機報告への対応)。
-  ワープ判定はドラッグ中は発火しない設計。
+  otherMouseDragged) は OS へ素通しする (2026-07-10 フィードバック #5)。ドラッグ移動は
+  NSEvent global monitor 経由で mouseMoved と同格の「ポインタ活動」として扱う: レーザー
+  表示中は追従し続け、アイドルフェードで消えた後でもボタンを押したまま動かせば復活する
+  (2026-07-10 実機第 3 ラウンドで確認観点化)。view への反映 (tap 経由・drag monitor 経由
+  とも) は coalesce タイマー (トレーリングエッジ間引き、既定 16ms) にまとめられ、イベント
+  レートに比例して SwiftUI 再描画コストが増えないようにしている。ワープ判定はドラッグ中は
+  発火しない設計。
 
 ## キャリブレーション画面 (DR-0008)
 

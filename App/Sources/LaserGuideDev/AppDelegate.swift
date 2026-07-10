@@ -147,21 +147,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     // MARK: - Drag position monitor (#5)
 
     /// tap eventsOfInterest から除外したドラッグ系イベントの位置更新だけを購読する。
-    /// NSEvent.mouseLocation は y-up (bottom-left) なので main NSScreen 高さで CG y-down に変換。
+    /// NSEvent.mouseLocation は y-up (bottom-left) なので primary NSScreen 高さで CG y-down に変換。
     ///
-    /// 2026-07-10 第 2 ラウンド #5: レーザーが非表示 (アイドルフェード後、isMouseActive == false)
-    /// の間は追跡そのものをスキップする。目的は「既に見えているレーザーがドラッグ中も座標に
-    /// 追従し続け、ドラッグ終了時に古い位置へジャンプしないこと」であり、非表示中に始まった
-    /// ドラッグ (= ウィンドウ移動等、レーザーと無関係な操作である可能性が高い) まで毎イベント
-    /// CG 変換 + overlay 走査を行う必要はない。OverlayViewModel 側の 60Hz coalesce と合わせて
-    /// 二重にコストを削る。
+    /// ドラッグ移動も mouseMoved と同格の「ポインタ活動」として常に VM へ流す — レーザーが
+    /// アイドルフェードで消えた後でも、ボタンを押したまま動かせばレーザーが復活する
+    /// (2026-07-10 実機第 3 ラウンド: 旧実装は isMouseActive == false の間ドラッグを丸ごと
+    /// 捨てていたため、mousedown で静止 → フェード → そのまま動かしても再描画されなかった)。
+    /// パフォーマンスはここで間引かず OverlayViewModel 側の coalesce (トレーリングエッジ
+    /// スロットル) に一元化する — この closure の仕事は CG 変換と pending 値の上書きだけで、
+    /// @Published 発火 (SwiftUI 再評価) はイベントレートに比例しない。
     private func startDragPositionMonitor() {
         stopDragPositionMonitor()
         dragPositionMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] _ in
             guard let self else { return }
-            guard self.overlayModelById.values.contains(where: { $0.isMouseActive }) else { return }
             let cg = PermissionMonitor.nsScreenPointToCG(NSEvent.mouseLocation)
             let p = LogicalPoint(x: Double(cg.x), y: Double(cg.y))
             for (_, vm) in self.overlayModelById { vm.apply(mouseLocation: p) }
