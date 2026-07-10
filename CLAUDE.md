@@ -1,98 +1,42 @@
-# AI Assistant Guidelines for LaserGuide
+# LaserGuide v3 — AI Assistant Guide
 
-LaserGuide: macOS app displaying laser lines from screen corners to mouse cursor.
+> [日本語](./CLAUDE.ja.md)
 
-## Quick Reference
+macOS menu-bar app that visualizes "where am I now?" on multi-monitor setups via overlay rendering.
+Three components: **Laser** (cursor location) / **Edge Warp** (cursor movement control at virtual boundaries) / **Focus Flash** (highlights the monitor that received window focus).
 
-### Testing After Changes
+## Branch status (important)
+
+- **v3 (this branch)**: full rewrite on SPM. The active line of development
+- main: v0.12.1 distribution line (v1 implementation). **Pushing to main triggers the release CD** — do not touch until v3 replaces it
+- v2: local-only previous rewrite skeleton (v3 branched from it). `LaserGuide/` and `LaserGuide.v1.backup/` are previous-generation sources kept for reference — read them, never modify
+
+## Quick Commands
+
 ```bash
-# LOCAL development (quick iteration)
-./scripts/dev-run.sh          # Build and run locally
-
-# BEFORE pushing to main (catches build errors locally)
-./scripts/pre-push-test.sh    # Run same build tests as CI
-
-# AFTER push to main
-./scripts/verify-ci-cd.sh     # Wait for CI/CD completion and test installation
+just ci          # lint (swiftlint --strict) + all Core/App tests
+just test        # tests only
+just run         # dev run (swift run laserguide-dev); needs Accessibility permission
+just build-app   # assemble LaserGuide.app (ad-hoc signed + verified)
+just push-wip    # push current branch with ci gate (main is rejected)
 ```
 
-### Development Workflow
-- **Direct commits to main**: For simple fixes
-- **Feature branches with worktrees**: For complex features only
-- **Conventional commits**: `feat:` (minor bump) / `fix:` (patch bump) / `docs:` (no release)
-- **Always run pre-push-test.sh**: Before pushing to catch CI failures locally
+## Architecture
 
-### Project Structure
-- `LaserGuide/` - Swift source code
-- `scripts/` - Test automation scripts
-- `Casks/` - Homebrew cask template
-- `.github/workflows/` - CI/CD automation
+- `Core/` — **UI-independent pure-function layer** (SwiftPM): coordinate types, pose, edge connections, warp judgement, reducer, persistence schema. Tests are the spec (read the intent comments)
+- `App/` — executable `laserguide-dev` (SwiftPM): effect interpreter (CGEventTap / overlays / UserDefaults / WKWebView bridge) and menu bar
+- Unidirectional data flow (hand-rolled Elm-style, DR-0004): `reduce(AppState, Action) -> (AppState, [Effect])`. No side effects in the reducer; single store, synchronous on the main run loop
+- `App/Resources/calibration/` — calibration UI (a **pure view** in WKWebView; implementing geometry in JS is forbidden = DR-0008)
 
-## Automated Systems
+## Coordinate-system iron rules (DR-0005)
 
-### CI/CD Pipeline
-Push to main → Build/Test → Version bump (if code changed) → Release → Update Homebrew tap
+- Logical coordinates = **CG global (top-left origin, y-down)**. `LogicalPoint` / `PhysicalPoint` (mm, also y-down) are separate types
+- Values from NSScreen / NSEvent / AX are **converted to CG immediately at the input-adapter boundary**; never carry y-up inside the reducer
+- "Top" = the minY side. Real-machine clamp behavior (min side = exact boundary / max side = −0.02px) is recorded in docs/findings/
 
-### Release Process
-Fully automated. Code changes trigger:
-1. Version determination from commit messages
-2. Build and create GitHub release
-3. Update `kawaz/homebrew-laserguide` repository
+## Working conventions
 
-## Code Guidelines
-
-### Key Files
-- `Managers/MouseTrackingManager.swift` - Mouse event handling (debounce pattern)
-- `Models/LaserViewModel.swift` - Laser display logic
-- `Config.swift` - App configuration
-
-### Mouse Tracking
-- Monitor: `.mouseMoved`, `.leftMouseDragged`, `.rightMouseDragged`, `.otherMouseDragged`
-- **Do not** monitor: `.scrollWheel` (prevents inertia scroll issues)
-- Use `DispatchWorkItem` for debounce (not `Timer`)
-
-## Documentation Maintenance
-
-### Regular Cleanup Tasks
-When starting a new session, check:
-1. Remove obsolete files/directories
-2. Update outdated documentation
-3. Keep CLAUDE.md concise (this file)
-
-### Documentation Files
-- `README.md` / `README.ja.md` - User documentation (synced)
-- `CONTRIBUTING.md` - Development guide
-- `CLAUDE.md` - This file (AI assistant context)
-- `.github/workflows/README.md` / `README.ja.md` - CI/CD overview (synced)
-
-### Maintenance Principles
-- **Concise over comprehensive**: Remove redundancy
-- **Actionable over explanatory**: Focus on what to do
-- **Current over complete**: Delete outdated content
-- **Automated over manual**: Use scripts for repetitive tasks
-
-## Common Tasks
-
-### Fix and Deploy
-1. Make code changes
-2. Commit with conventional prefix
-3. **Run `./scripts/pre-push-test.sh`** (catches build errors before CI)
-4. Push to main
-5. Run `./scripts/verify-ci-cd.sh` (includes CI/CD verification and Homebrew installation test)
-6. Verify functionality
-
-### Add Feature
-1. Create worktree if complex: `git worktree add .worktrees/feature-name -b feature/feature-name`
-2. Implement and test locally
-3. Commit with `feat:` prefix
-4. Merge to main
-5. Clean up worktree
-6. Follow "Fix and Deploy" steps
-
-## Important Notes
-- **Code signing**: Using Apple Development certificate (free)
-  - First launch requires: Right-click → Open → Open button
-  - For no warnings: Need Developer ID certificate ($99/year)
-- **Homebrew tap**: Separate repository `kawaz/homebrew-laserguide`
-- **Test scripts**: Use provided scripts to avoid repetitive work
-- **Keep this file short**: Remove outdated information regularly
+- Design decisions live in `docs/decisions/` (DR-0002..0010 + INDEX) — check both directions when implementation and DRs disagree
+- History in `docs/journal/`, real-device procedures in `docs/runbooks/v3-dev-run.md`, open tasks in `docs/issue/`
+- Never create tags / GH Releases manually (the CD does that). Release timing is kawaz's call
+- Tests carry intent comments per spec contour. Loosening tests to get green is forbidden
