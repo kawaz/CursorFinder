@@ -196,7 +196,9 @@ public enum Store {
             let committedDisplays = state.calibration.previewDisplays(basedOn: state.displays)
             next.replaceDisplaysAndRebuildTables(committedDisplays)
             next.calibration = .idle
-            return (next, [.persist(PersistedWorkspace(userSegments: state.userSegments, configuration: state.configuration))])
+            // 確定後の displays (= 候補 pose 昇格済み) から V3 payload を組む。userSegments は
+            // hardwareId (displayId) でグルーピングして各 PersistedDisplayV3 に振り分ける。
+            return (next, [.persist(buildPersistedWorkspaceV3(displays: committedDisplays, userSegments: state.userSegments))])
 
         case .cancel:
             next.calibration = .idle
@@ -213,7 +215,32 @@ public enum Store {
     ) -> (AppState, [Effect]) {
         var next = state
         next.configuration = configuration
-        return (next, [.persist(PersistedWorkspace(userSegments: state.userSegments, configuration: configuration))])
+        // 現 V3 スキーマは configuration を含まないため、write のトリガとしてのみ persist を発行
+        // (displays + userSegments のスナップショット、pose は再取得しても同値だが冪等性は保たれる)。
+        // configuration 自体の永続化は Persistence/ 所有者がスキーマ拡張したときに追記予定。
+        return (next, [.persist(buildPersistedWorkspaceV3(displays: state.displays, userSegments: state.userSegments))])
+    }
+
+    // ================================
+    // Persistence payload build
+    // ================================
+
+    /// displays + userSegments から PersistedWorkspaceV3 を組む。userSegments は displayId で
+    /// 振り分ける (対向側は相手モニタの PersistedDisplayV3 に自然に入る)。displays に無い
+    /// displayId を持つ孤立 userSegments は捨てる (再構成時に持ち主モニタが取れないため、
+    /// reconcile 側でも扱いようがない)。
+    static func buildPersistedWorkspaceV3(
+        displays: [Display], userSegments: [PassSegment]
+    ) -> PersistedWorkspaceV3 {
+        let byDisplay = Dictionary(grouping: userSegments, by: { $0.displayId })
+        let persisted = displays.map { d in
+            PersistedDisplayV3(
+                hardwareId: d.id,
+                pose: d.pose,
+                userSegments: byDisplay[d.id] ?? []
+            )
+        }
+        return PersistedWorkspaceV3(displays: persisted)
     }
 }
 

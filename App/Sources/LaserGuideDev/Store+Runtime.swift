@@ -10,7 +10,7 @@ import LaserGuideCore
 
 /// Effect インタープリタの委譲先。runtime 外の world (tap 再有効化, 永続化, 通知) を注入する。
 public protocol EffectInterpreter: AnyObject {
-    func handlePersist(_ workspace: PersistedWorkspace)
+    func handlePersist(_ workspace: PersistedWorkspaceV3)
     func handleReenableTap()
     func handleNotifyPermissionLost()
 }

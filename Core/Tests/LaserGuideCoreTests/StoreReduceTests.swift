@@ -356,9 +356,66 @@ final class StoreReduceTests: XCTestCase {
         XCTAssertEqual(next.tables, confirmedTablesBefore, "preview 後も確定済み tables は不変")
 
         let (committed, effects) = Store.reduce(next, .calibration(.commit))
-        XCTAssertEqual(effects, [.persist(PersistedWorkspace(userSegments: setup.userSegments, configuration: .default))])
+        // DR-0007 決定 2/6/7 + 2026-07-10 team-lead 追加指示: persist payload は
+        // PersistedWorkspaceV3 で確定 pose を含む (旧 PersistedWorkspace は pose を運ばない実装漏れ)。
+        // 意図: 「commit で書かれる payload は、確定後の pose (= candidate 昇格済み) と
+        // 現 userSegments を hardwareId 単位に振り分けたもの」。緩めずに payload そのものを固定する。
+        XCTAssertEqual(effects.count, 1, "commit は persist を 1 件だけ発行")
+        guard case let .persist(payload)? = effects.first else {
+            return XCTFail("commit は persist effect を発行するはず: \(effects)")
+        }
+        XCTAssertEqual(payload.version, PersistedWorkspaceV3.currentVersion)
+        XCTAssertEqual(payload.displays.count, committed.displays.count, "payload の displays は確定後の displays と同数")
+        for d in committed.displays {
+            guard let entry = payload.displays.first(where: { $0.hardwareId == d.id }) else {
+                return XCTFail("hardwareId=\(d.id) が payload に無い")
+            }
+            XCTAssertEqual(entry.pose, d.pose, "commit で昇格した確定 pose が payload に載っている")
+            XCTAssertEqual(Set(entry.userSegments), Set(setup.userSegments.filter { $0.displayId == d.id }),
+                           "userSegments は displayId でグルーピング済み")
+        }
         XCTAssertNotEqual(committed.tables, confirmedTablesBefore, "commit で初めて確定済み tables が候補 pose を反映する")
         XCTAssertEqual(committed.calibration, .idle, "commit 後はキャリブレーション編集状態がクリアされる")
+    }
+
+    /// キャリブレーション commit で **候補 pose (= 単なる旧値ではない)** が payload の pose に
+    /// 昇格していることを直接固定する (旧 PersistedWorkspace 型では pose を運べず、この不変条件を
+    /// 表現できなかった。追加された PersistedWorkspaceV3 で表現可能になったので固定する)。
+    func testCommitPersistsUpgradedCandidatePoseNotOriginal() {
+        let displays = [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+            Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity),
+        ]
+        var state = AppState(displays: displays, userSegments: [])
+        (state, _) = Store.reduce(state, .calibration(.dragStart(displayId: "A")))
+        let candidate = DisplayPose(translate: PhysicalPoint(x: 42, y: -7), scaleX: 1, scaleY: 1)
+        (state, _) = Store.reduce(state, .calibration(.dragMove(displayId: "A", candidatePose: candidate)))
+        let (_, effects) = Store.reduce(state, .calibration(.commit))
+        guard case let .persist(payload)? = effects.first else {
+            return XCTFail("commit は persist effect を発行するはず: \(effects)")
+        }
+        let entryA = payload.displays.first(where: { $0.hardwareId == "A" })
+        XCTAssertEqual(entryA?.pose, candidate, "commit の payload は候補 pose を確定として保持する")
+        let entryB = payload.displays.first(where: { $0.hardwareId == "B" })
+        XCTAssertEqual(entryB?.pose, .identity, "ドラッグしていない B の pose は identity のまま")
+    }
+
+    /// settingsChanged 経由の persist も同じ payload 構造で発行される (configuration は現 V3
+    /// スキーマに含まれないので payload には現れない — Persistence/ 所有者が拡張したら追記予定)。
+    /// 「settingsChanged が persist を発行する」不変条件と、payload が現 displays + userSegments を
+    /// 反映することを固定する。
+    func testSettingsChangedEmitsPersistWithCurrentDisplaysAndUserSegments() {
+        let setup = twoAdjacentDisplaysWithFullOverlapUserSegments()
+        let state = AppState(displays: setup.displays, userSegments: setup.userSegments)
+        let (_, effects) = Store.reduce(state, .settingsChanged(AppConfiguration(edgeEpsilon: 0.5, warpInwardInsetMillimeters: 0.003)))
+        guard case let .persist(payload)? = effects.first, effects.count == 1 else {
+            return XCTFail("settingsChanged は persist を 1 件発行するはず: \(effects)")
+        }
+        XCTAssertEqual(payload.version, PersistedWorkspaceV3.currentVersion)
+        XCTAssertEqual(Set(payload.displays.map(\.hardwareId)), Set(setup.displays.map(\.id)))
+        // hardwareId でグルーピングされた userSegments の合計は元の userSegments と同集合
+        let flattened = Set(payload.displays.flatMap(\.userSegments))
+        XCTAssertEqual(flattened, Set(setup.userSegments))
     }
 
     // ==================

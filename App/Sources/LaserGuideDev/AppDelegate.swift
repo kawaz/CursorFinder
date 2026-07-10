@@ -271,9 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
 
     // MARK: - EffectInterpreter
 
-    func handlePersist(_ workspace: PersistedWorkspace) {
-        // Phase 1: 永続化は未実装 (UserDefaults 経路の骨組みは Phase 2)。ログのみ。
-        NSLog("[LaserGuide] persist: userSegments=\(workspace.userSegments.count) configuration=\(workspace.configuration)")
+    func handlePersist(_ workspace: PersistedWorkspaceV3) {
+        // Phase 1: 永続化は未実装 (UserDefaults 経路は Persistence/ 所有者が実装中)。ログのみ。
+        let segCount = workspace.displays.reduce(0) { $0 + $1.userSegments.count }
+        NSLog("[LaserGuide] persist v\(workspace.version): displays=\(workspace.displays.count) userSegments(total)=\(segCount)")
     }
 
     func handleReenableTap() {
