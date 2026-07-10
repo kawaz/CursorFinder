@@ -1,11 +1,11 @@
 ---
 title: プレゼンテーションモード (キャプチャ表示トグル + クリック可視化サークル)
-status: idea
+status: wip
 category: request
 created: 2026-07-10T11:21:55+09:00
 last_read:
 open_entered:
-wip_entered:
+wip_entered: 2026-07-10T11:57:42+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
@@ -41,7 +41,7 @@ origin: kawaz発案
 
 ## TODO
 
-<!-- wip 時のみ -->
+2026-07-10 実装完了 (commit fecd1f3): メニューのプレゼンテーションモードトグル (チェックマーク式)、on で全オーバーレイの sharingType=.readOnly + クリック可視化サークル (mousedown 中の半透明サークル、up でフェードアウト)。OverlayViewModelTests で状態遷移を固定済み。close は kawaz の実機確認 (キャプチャ映り込み・サークルの見た目) 後。
 
 ## 実装タイミング
 
