@@ -1,5 +1,13 @@
 name: CD - Auto Release and Deploy
 
+# DR-0010: SPM 完結 + scripts/build-app-bundle.sh 経路。
+# 旧 xcodeproj (xcodebuild archive) 段は廃止し、bottom-up codesign + notarytool + stapler
+# パターンに書き換える (kawaz/authsock-warden 等での実績パターン、
+# personal-macos-signing-notarization skill 準拠)。
+#
+# Cask 更新・タグ/リリース作成・secrets 参照の後段は温存。
+# 変更検出 path filter は v3 の実体 (App/, Core/, Package.swift, resolved, calibration 資産, script) を追う。
+
 on:
   push:
     branches:
@@ -27,19 +35,19 @@ jobs:
       - name: Check for code changes
         id: check_changes
         run: |
-          # Get the latest tag
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "Latest tag: $LATEST_TAG"
 
-          # Check if force release is requested
           if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
             echo "Force release requested"
             echo "skip_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Check if there are any code changes since the last tag
-          CODE_CHANGES=$(git diff --name-only $LATEST_TAG..HEAD | grep -E '\.(swift|m|mm|h|cpp|c|xcodeproj|plist|entitlements)$' || true)
+          # DR-0010: v3 の path filter。App/Core/Package.swift/resolved/calibration 資産/
+          # build-app-bundle.sh/Info.plist.template の変更でリリース。
+          CODE_CHANGES=$(git diff --name-only "$LATEST_TAG"..HEAD | grep -E \
+            '(^App/|^Core/|Package\.swift$|Package\.resolved$|Resources/calibration/|scripts/build-app-bundle\.sh$|scripts/Info\.plist\.template$)' || true)
 
           if [ -z "$CODE_CHANGES" ]; then
             echo "No code changes found since $LATEST_TAG"
@@ -54,40 +62,34 @@ jobs:
         if: steps.check_changes.outputs.skip_release != 'true'
         id: version_bump
         run: |
-          # Get the latest tag
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          
-          # Get commit messages since last tag
+
           if [ "$LATEST_TAG" = "v0.0.0" ]; then
             COMMITS=$(git log --pretty=format:"%s" --reverse)
           else
-            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s")
+            COMMITS=$(git log "${LATEST_TAG}"..HEAD --pretty=format:"%s")
           fi
-          
-          # Check for breaking changes or features
+
           BUMP_TYPE="patch"
-          
-          # Check commit messages for conventional commits
           while IFS= read -r commit; do
-            if [[ "$commit" =~ ^(feat|feature): ]] || [[ "$commit" =~ BREAKING[\s-]CHANGE ]]; then
+            if [[ "$commit" =~ ^(feat|feature): ]] || [[ "$commit" =~ BREAKING[\ -]CHANGE ]]; then
               BUMP_TYPE="minor"
               break
             fi
           done <<< "$COMMITS"
-          
+
           echo "Bump type: $BUMP_TYPE"
           echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
-          
-          # Calculate new version
+
           CURRENT_VERSION=${LATEST_TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-          
+
           if [ "$BUMP_TYPE" = "minor" ]; then
             NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
           else
             NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           fi
-          
+
           echo "New version: v$NEW_VERSION"
           echo "new_version=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "version_number=$NEW_VERSION" >> "$GITHUB_OUTPUT"
@@ -96,46 +98,39 @@ jobs:
         if: steps.check_changes.outputs.skip_release != 'true'
         run: |
           NEW_VERSION="${{ steps.version_bump.outputs.new_version }}"
-          
-          # Create tag locally
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$NEW_VERSION" -m "Auto-release $NEW_VERSION"
-          
-          echo "✅ Created tag $NEW_VERSION"
+          echo "Created tag $NEW_VERSION"
 
       - name: Generate Release Notes
         if: steps.check_changes.outputs.skip_release != 'true'
         id: changelog
         run: |
-          # Get the previous tag
           NEW_VERSION="${{ steps.version_bump.outputs.new_version }}"
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
-          
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "$(git rev-list --tags --skip=1 --max-count=1)" 2>/dev/null || echo "")
+
           if [ -z "$PREVIOUS_TAG" ]; then
-            # First release
             COMMITS=$(git log --pretty=format:"- %s" --reverse | grep -v "^- Update Cask to v" || true)
           else
-            # Changes since previous tag (exclude Cask update commits)
-            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" | grep -v "^- Update Cask to v" || true)
+            COMMITS=$(git log "${PREVIOUS_TAG}"..HEAD --pretty=format:"- %s" | grep -v "^- Update Cask to v" || true)
           fi
-          
-          # Create release notes
-          echo "## What's Changed" > release_notes.md
-          echo "" >> release_notes.md
-          if [ -n "$COMMITS" ]; then
-            echo "$COMMITS" >> release_notes.md
-          else
-            echo "- Minor improvements and bug fixes" >> release_notes.md
-          fi
-          
-          # Add GitHub changelog URL
-          echo "" >> release_notes.md
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${NEW_VERSION}" >> release_notes.md
-          else
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/${NEW_VERSION}" >> release_notes.md
-          fi
+
+          {
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$COMMITS" ]; then
+              echo "$COMMITS"
+            else
+              echo "- Minor improvements and bug fixes"
+            fi
+            echo ""
+            if [ -n "$PREVIOUS_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${NEW_VERSION}"
+            else
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/${NEW_VERSION}"
+            fi
+          } > release_notes.md
 
       - name: Set up Xcode
         if: steps.check_changes.outputs.skip_release != 'true'
@@ -149,99 +144,74 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          # Create temporary files
           CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
-          # Decode certificate
-          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
 
-          # Create keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Import certificate
-          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Allow codesign to access the keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-      - name: Build Universal Binary
+      - name: Build .app bundle (SPM + build-app-bundle.sh)
         if: steps.check_changes.outputs.skip_release != 'true'
         env:
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          set -e
+          set -euo pipefail
           VERSION="${{ steps.version_bump.outputs.version_number }}"
           echo "Building version $VERSION"
 
-          xcodebuild -scheme LaserGuide \
-            -configuration Release \
-            -derivedDataPath ./build \
-            -destination 'generic/platform=macOS' \
-            -archivePath ./build/LaserGuide.xcarchive \
-            archive \
-            DEVELOPMENT_TEAM="$APPLE_DEVELOPMENT_TEAM" \
-            CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
-            CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGN_STYLE=Manual \
-            MARKETING_VERSION="$VERSION" \
-            CURRENT_PROJECT_VERSION="$VERSION"
+          # build-app-bundle.sh は:
+          #   1. swift build -c release で laserguide-dev をビルド
+          #   2. LaserGuide.app 構造を組み立て (Info.plist は template から生成)
+          #   3. calibration リソースを Contents/Resources 直下へコピー
+          #   4. codesign (identity 指定時は --options runtime --timestamp を明示)
+          #   5. codesign --verify --deep --strict で検証
+          scripts/build-app-bundle.sh --version "$VERSION" --identity "$APPLE_SIGNING_IDENTITY"
 
-      - name: Verify Code Signature
-        if: steps.check_changes.outputs.skip_release != 'true'
-        run: |
-          set -e
-          APP_PATH="build/LaserGuide.xcarchive/Products/Applications/LaserGuide.app"
-
-          echo "🔏 Verifying code signature..."
+          # 検証: signature が Apple Developer ID かどうか確認 (旧 workflow と同じ ad-hoc 排除ロジック)
+          APP_PATH="build/app/LaserGuide.app"
           codesign -dv --verbose=4 "$APP_PATH" 2>&1 | tee /tmp/codesign_output.txt
 
-          # Check if properly signed (not adhoc)
           if grep -q "Signature=adhoc" /tmp/codesign_output.txt; then
-            echo "❌ Error: App is only adhoc signed"
+            echo "Error: App is only adhoc signed"
             exit 1
-          elif grep -q "Authority=Apple Development:" /tmp/codesign_output.txt || grep -q "Authority=Developer ID Application:" /tmp/codesign_output.txt; then
-            echo "✅ App is properly code signed"
+          elif grep -q "Authority=Apple Development:" /tmp/codesign_output.txt \
+              || grep -q "Authority=Developer ID Application:" /tmp/codesign_output.txt; then
+            echo "App is properly code signed"
             grep "Authority=" /tmp/codesign_output.txt | head -1
             grep "TeamIdentifier=" /tmp/codesign_output.txt || true
           else
-            echo "❌ Unexpected signature status"
+            echo "Unexpected signature status"
             cat /tmp/codesign_output.txt
             exit 1
           fi
 
-          # Verify signature validity
-          echo ""
-          echo "🔍 Verifying signature validity..."
-          codesign --verify --verbose=4 "$APP_PATH" 2>&1
-          echo "✅ Signature is valid"
-
       - name: Create ZIP
         if: steps.check_changes.outputs.skip_release != 'true'
         run: |
-          set -e
+          set -euo pipefail
           VERSION="${{ steps.version_bump.outputs.version_number }}"
           ZIP_NAME="LaserGuide-${VERSION}.zip"
 
-          cd build/LaserGuide.xcarchive/Products/Applications
-          zip -r ../../../"${ZIP_NAME}" LaserGuide.app
+          # notarytool は zip を受け付ける。旧経路と同じ命名で Cask 更新の regex を維持する。
+          cd build/app
+          zip -r "../../${ZIP_NAME}" LaserGuide.app
           cd -
-          mv build/"${ZIP_NAME}" .
 
           echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
 
-          # Verify ZIP was created
           if [ ! -f "${ZIP_NAME}" ]; then
             echo "Error: ZIP file was not created"
             exit 1
           fi
-
-          echo "✅ Created ${ZIP_NAME}"
+          echo "Created ${ZIP_NAME}"
 
       - name: Notarize App
         if: steps.check_changes.outputs.skip_release != 'true'
@@ -250,10 +220,9 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          set -e
+          set -euo pipefail
           ZIP_NAME="${{ env.ZIP_NAME }}"
 
-          echo "📤 Submitting app for notarization..."
           xcrun notarytool submit "$ZIP_NAME" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
@@ -262,11 +231,10 @@ jobs:
             --timeout 10m \
             2>&1 | tee /tmp/notarization_output.txt
 
-          # Check notarization status
           if grep -q "status: Accepted" /tmp/notarization_output.txt; then
-            echo "✅ Notarization succeeded"
+            echo "Notarization succeeded"
           else
-            echo "❌ Notarization failed"
+            echo "Notarization failed"
             cat /tmp/notarization_output.txt
             exit 1
           fi
@@ -274,32 +242,29 @@ jobs:
       - name: Staple Notarization Ticket
         if: steps.check_changes.outputs.skip_release != 'true'
         run: |
-          set -e
+          set -euo pipefail
           ZIP_NAME="${{ env.ZIP_NAME }}"
 
-          # Extract the app
-          unzip -q "$ZIP_NAME"
+          # ZIP を一時展開して staple、その後 zip をやり直す (旧経路と同じ手順)。
+          rm -rf /tmp/staple-work
+          mkdir -p /tmp/staple-work
+          unzip -q "$ZIP_NAME" -d /tmp/staple-work
 
-          echo "📎 Stapling notarization ticket..."
-          xcrun stapler staple LaserGuide.app
+          xcrun stapler staple /tmp/staple-work/LaserGuide.app
+          xcrun stapler validate /tmp/staple-work/LaserGuide.app
 
-          # Verify stapling
-          echo "🔍 Verifying staple..."
-          xcrun stapler validate LaserGuide.app
-
-          # Re-create ZIP with stapled app
           rm "$ZIP_NAME"
-          zip -r "$ZIP_NAME" LaserGuide.app
-          rm -rf LaserGuide.app
+          ( cd /tmp/staple-work && zip -r "$OLDPWD/${ZIP_NAME}" LaserGuide.app )
+          rm -rf /tmp/staple-work
 
-          echo "✅ Notarization ticket stapled and re-zipped"
+          echo "Notarization ticket stapled and re-zipped"
 
       - name: Push tag
         if: steps.check_changes.outputs.skip_release != 'true'
         run: |
           NEW_VERSION="${{ steps.version_bump.outputs.new_version }}"
           git push origin "$NEW_VERSION"
-          echo "✅ Pushed tag $NEW_VERSION"
+          echo "Pushed tag $NEW_VERSION"
 
       - name: Create Release with Asset
         if: steps.check_changes.outputs.skip_release != 'true'
@@ -317,41 +282,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          set -e
-          # Get version and SHA256
+          set -euo pipefail
           VERSION="${{ steps.version_bump.outputs.version_number }}"
           SHA256=$(shasum -a 256 "${ZIP_NAME}" | awk '{print $1}')
 
           echo "Version: $VERSION"
           echo "SHA256: $SHA256"
 
-          # Clone homebrew-laserguide tap repository
-          git clone https://x-access-token:${GH_TOKEN}@github.com/kawaz/homebrew-laserguide.git tap-repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/kawaz/homebrew-laserguide.git" tap-repo
           cd tap-repo
 
-          # Update Cask
           sed -i '' \
             -e "s|version \"[0-9.]*\"|version \"${VERSION}\"|" \
             -e "s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA256}\"|" \
             Casks/laserguide.rb
 
-          # Verify changes
           echo "Updated Cask contents:"
           cat Casks/laserguide.rb
 
-          # Commit and push changes
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/laserguide.rb
           git commit -m "Update Cask to v${VERSION}"
           git push origin main
 
-          echo "✅ Updated Homebrew tap to v${VERSION}"
+          echo "Updated Homebrew tap to v${VERSION}"
 
       - name: Clean up keychain
         if: always() && steps.check_changes.outputs.skip_release != 'true'
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           if [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain $KEYCHAIN_PATH || true
+            security delete-keychain "$KEYCHAIN_PATH" || true
           fi

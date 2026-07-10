@@ -1,5 +1,10 @@
 name: Code Quality
 
+# DR-0010: SPM 完結構成 (App + Core パッケージ)。旧 xcodeproj 経路の
+# analyze / ASAN ステップは廃止し、swift build + swift test + swiftlint --strict に統一。
+# Address / Undefined Sanitizer は Package.swift 側での対応が別途必要になったら追加検討する
+# (Phase 1 の main merge 時点では過剰、まずは lint + build + test の基本 gate を回す)。
+
 on:
   push:
     branches: [ main ]
@@ -9,62 +14,41 @@ on:
 jobs:
   code-quality:
     runs-on: macos-latest
-    
+
     steps:
-    - uses: actions/checkout@v5
-    
-    - name: Set up Xcode
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: latest-stable
-    
-    - name: Swift Lint
-      run: |
-        # Install SwiftLint if not available
-        if ! command -v swiftlint &> /dev/null; then
-          brew install swiftlint
-        fi
-        
-        # Run SwiftLint
-        swiftlint --strict --reporter github-actions-logging
-    
-    - name: Build and Analyze
-      run: |
-        # Build with static analyzer
-        xcodebuild -project LaserGuide.xcodeproj \
-          -scheme LaserGuide \
-          -configuration Debug \
-          -derivedDataPath build \
-          analyze \
-          CLANG_STATIC_ANALYZER_MODE=deep \
-          RUN_CLANG_STATIC_ANALYZER=YES \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
-    
-    - name: Memory Leak Detection Build
-      run: |
-        # Build with Address Sanitizer for memory leak detection
-        xcodebuild -project LaserGuide.xcodeproj \
-          -scheme LaserGuide \
-          -configuration Debug \
-          -derivedDataPath build-asan \
-          build \
-          ENABLE_ADDRESS_SANITIZER=YES \
-          ENABLE_UNDEFINED_BEHAVIOR_SANITIZER=YES \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
-    
-    - name: Performance Monitoring Setup
-      run: |
-        # Create performance monitoring configuration
-        mkdir -p .github/performance
-        cat > .github/performance/config.json << EOF
-        {
-          "memory_threshold_mb": 100,
-          "cpu_threshold_percent": 50,
-          "startup_time_threshold_ms": 2000,
-          "monitoring_enabled": true
-        }
-        EOF
-        
-        echo "✅ Performance monitoring configuration created"
+      - uses: actions/checkout@v5
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show Swift toolchain
+        run: swift --version
+
+      - name: SwiftLint (--strict)
+        run: |
+          if ! command -v swiftlint &> /dev/null; then
+            brew install swiftlint
+          fi
+          swiftlint --strict --reporter github-actions-logging
+
+      - name: Build Core (release)
+        run: |
+          cd Core
+          swift build -c release
+
+      - name: Build App (release)
+        run: |
+          cd App
+          swift build -c release
+
+      - name: Test Core
+        run: |
+          cd Core
+          swift test --parallel
+
+      - name: Test App
+        run: |
+          cd App
+          swift test --parallel
