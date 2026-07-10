@@ -68,13 +68,37 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
     }
 
     private func loadCalibrationHTML(into wv: WKWebView) {
-        // SwiftPM の resources: [.copy("Resources/calibration")] で丸ごとコピーされたディレクトリを
-        // loadFileURL する。allowingReadAccessTo を親ディレクトリにすることで隣接 main.js も読める。
-        guard let url = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "calibration") else {
-            NSLog("[LaserGuide] calibration: index.html not found in Bundle.module")
+        // DR-0010: `swift run laserguide-dev` 経路 (SPM) と `.app` 起動経路 (build-app-bundle.sh)
+        // の両方をサポートする。SPM は資産を Bundle.module (パッケージ生成の resource bundle) に
+        // 置き、.app バンドルは Contents/Resources 直下に置くため、両者から順に検索する。
+        guard let url = Self.calibrationIndexURL() else {
+            NSLog("[LaserGuide] calibration: index.html not found in Bundle.module nor Bundle.main")
             return
         }
         wv.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    /// キャリブレーション UI の `index.html` を、SPM 経路 (`Bundle.module`) と .app 経路
+    /// (`Bundle.main.resourceURL/calibration/`) の両方から探す。
+    ///
+    /// 検索順:
+    ///   1. `Bundle.module.url(forResource:...)`: SPM `resources: [.copy("Resources/calibration")]`
+    ///      が展開した bundle。`swift run laserguide-dev` はこの経路を取る
+    ///   2. `Bundle.main` の `Contents/Resources/calibration/index.html`: build-app-bundle.sh が
+    ///      .app バンドル組み立て時に Resources 直下へコピーした経路
+    ///
+    /// どちらでも見つからない場合は nil を返し、呼び出し側が NSLog で報告する。
+    static func calibrationIndexURL() -> URL? {
+        if let url = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "calibration") {
+            return url
+        }
+        if let base = Bundle.main.resourceURL {
+            let fallback = base.appendingPathComponent("calibration/index.html")
+            if FileManager.default.fileExists(atPath: fallback.path) {
+                return fallback
+            }
+        }
+        return nil
     }
 
     // MARK: - Push (Swift → JS)
@@ -131,6 +155,10 @@ final class CalibrationWindowController: NSObject, NSWindowDelegate, WKScriptMes
 
     // MARK: - JS → Swift
 
+    // WKScriptMessage の kind 分岐が 6 通り + guard で cyclomatic complexity 11 になるが、
+    // 各 case は 1〜3 行の平坦な dispatch でネストは無い。閾値 10 は「絡み合った条件」向け
+    // で、フラットな dispatch table 型 switch は例外扱いする。
+    // swiftlint:disable:next cyclomatic_complexity
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "laserguide" else { return }
         guard let body = message.body as? [String: Any], let kind = body["kind"] as? String else {

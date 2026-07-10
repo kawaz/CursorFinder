@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist template for LaserGuide.app (DR-0010: SPM 完結 + スクリプト .app バンドル).
+
+  build-app-bundle.sh が __VERSION__ プレースホルダを差し替えて Contents/Info.plist を生成する。
+  キーの根拠:
+    - CFBundleIdentifier: DR-0003 で維持を明文化された Bundle ID (既存ユーザの UserDefaults 互換)
+    - LSUIElement: メニューバー常駐 (Dock アイコンなし)。DR-0002 の runtime 形態
+    - LSApplicationCategoryType: Cask / App Store 用の分類語
+    - NSAppleEventsUsageDescription: AppleEvents API 呼び出し時のシステム許可ダイアログの説明文
+    - CFBundleShortVersionString / CFBundleVersion: 同値 (kawaz 他リポと同運用)
+    - LSMinimumSystemVersion: Package.swift の `.macOS(.v13)` に対応
+    - NSHighResolutionCapable: Retina 対応の宣言 (必須)
+    - CFBundleExecutable: 実行バイナリ名 (build-app-bundle.sh は "LaserGuide" にリネームして配置)
+    - CFBundlePackageType: APPL (Application)
+    - CFBundleInfoDictionaryVersion / CFBundleSupportedPlatforms は明示なしで OS 側 default に任せる
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>LaserGuide</string>
+	<key>CFBundleIdentifier</key>
+	<string>jp.kawaz.LaserGuide</string>
+	<key>CFBundleName</key>
+	<string>LaserGuide</string>
+	<key>CFBundleDisplayName</key>
+	<string>LaserGuide</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Yoshiaki Kawazu (@kawaz). MIT License.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>LaserGuide がフォーカスされたウィンドウ情報を取得するために AppleEvents を使用します。</string>
+</dict>
+</plist>
