@@ -141,4 +141,90 @@ final class OverlayViewModelTests: XCTestCase {
         vm.clearPresentationClick()
         XCTAssertNil(vm.clickCircle)
     }
+
+    // MARK: - フォーカスフラッシュ (DR-0009 Phase A)
+
+    /// state.focusFlash が nil→非 nil に遷移すると、coalesce 経由でも focusFlash が initial
+    /// opacity で立ち上がる (= applyStateImmediately が generation 変化を検知して startFocusFlash
+    /// を呼ぶ)。
+    func testFocusFlashRisesOnStateFocusChangeAfterFlush() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.focusFlashInitialOpacity = 0.6
+        vm.focusFlashDuration = 1.0  // 直後の消滅を防ぐため長めに
+
+        var next = makeState(mouse: nil)
+        next.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        vm.apply(state: next)
+        XCTAssertNil(vm.focusFlash, "flush 前は反映されない")
+
+        let exp = expectation(description: "flush")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertNotNil(vm.focusFlash, "flush 後に立ち上がる")
+        XCTAssertEqual(vm.focusFlash?.displayId, "A")
+        // Timer 減衰は非同期なので上限で確認 (立ち上がり直後は initial に近い)
+        XCTAssertGreaterThan(vm.focusFlash?.opacity ?? -1, 0.3)
+    }
+
+    /// 同じ displayId でも state.focusFlash.generation が進めば opacity が新規発火扱いでリセットされる
+    /// (= 同一モニタ内のアプリ切替でも再発火する DR-0009 決定 2 の輪郭)。
+    func testFocusFlashRefiresOnSameDisplayWhenGenerationIncrements() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.focusFlashInitialOpacity = 0.6
+        vm.focusFlashDuration = 2.0  // 減衰完了前に再発火させる
+
+        var s1 = makeState(mouse: nil)
+        s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        vm.apply(state: s1)
+
+        let exp1 = expectation(description: "first")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { exp1.fulfill() }
+        wait(for: [exp1], timeout: 1.0)
+
+        // 少し減衰してから同じ displayId で generation++
+        let opacityAfterFirst = vm.focusFlash?.opacity ?? 0
+
+        var s2 = makeState(mouse: nil)
+        s2.focusFlash = FocusFlashState(displayId: "A", generation: 2)
+        vm.apply(state: s2)
+
+        let exp2 = expectation(description: "second")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp2.fulfill() }
+        wait(for: [exp2], timeout: 1.0)
+
+        XCTAssertNotNil(vm.focusFlash, "再発火で復活")
+        // 再発火後の opacity は 1 回目の減衰値より上 (initial 付近まで戻る)
+        XCTAssertGreaterThan(vm.focusFlash?.opacity ?? -1, opacityAfterFirst,
+                             "generation が進めば opacity が initial 付近にリセットされる")
+    }
+
+    /// clearFocusFlash() で減衰中でも即座に nil、かつ lastFocusFlashGeneration が state.focusFlash
+    /// に synchronize される (= off 中の発火を「見なかった」ものとして次回 on 時に再生しない)。
+    func testClearFocusFlashRemovesImmediatelyAndSyncsGeneration() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.focusFlashDuration = 2.0
+
+        var s1 = makeState(mouse: nil)
+        s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        vm.apply(state: s1)
+
+        let exp1 = expectation(description: "rise")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp1.fulfill() }
+        wait(for: [exp1], timeout: 1.0)
+        XCTAssertNotNil(vm.focusFlash)
+
+        vm.clearFocusFlash()
+        XCTAssertNil(vm.focusFlash, "clearFocusFlash で即座に消える")
+
+        // 同じ generation (=1) の state をもう一度流しても再生しない (見なかったとして扱う)
+        vm.apply(state: s1)
+        let exp2 = expectation(description: "no-refire")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp2.fulfill() }
+        wait(for: [exp2], timeout: 1.0)
+        XCTAssertNil(vm.focusFlash, "同じ generation で再発火しない")
+    }
 }

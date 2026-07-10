@@ -1,11 +1,11 @@
 ---
 title: 第3コンポーネント「フォーカスフラッシュ」— ウィンドウフォーカス変更の視覚エフェクト
-status: idea
+status: wip
 category: design
 created: 2026-07-10T11:23:41+09:00
-last_read:
+last_read: 2026-07-10T12:15:00+09:00
 open_entered:
-wip_entered:
+wip_entered: 2026-07-10T12:15:00+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:

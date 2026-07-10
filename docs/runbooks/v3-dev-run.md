@@ -164,6 +164,15 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
 - clickCircle の減衰は AppKit 側 Timer で opacity 値を段階的に更新 (SwiftUI 暗黙 animation を回避、
   ドラッグ中の main run loop でも 60Hz coalesce と衝突せず単独で動く)
 
+## フォーカスフラッシュ (DR-0009 Phase A) の確認観点
+
+メニュー `LG → フォーカスフラッシュ` を on にして (デフォルト off):
+
+- **Cmd-Tab でアプリ切替**: フォーカス先ウィンドウがあるモニタの縁が短時間 (~0.5s) 光ってフェードアウトする
+- **同一アプリ内のウィンドウ切替** (Cmd-`): Phase A は NSWorkspace のアプリ切替通知ベースのため発火しない場合がある (Phase B で AX observer による対応を検討、実機観測を issue に記録)
+- **別モニタのウィンドウへ切替**: 移動先モニタだけが光る
+- menubar / Dock 等 AX 非対応対象への切替は発火しない (仕様、observer 冒頭コメント参照)
+
 ## 既知の制約 (Phase 1)
 
 - 永続化 (persist effect) は UserDefaults 経路で書き込み済 (DR-0007 決定 2)。v1 設定は起動時に検出したら
