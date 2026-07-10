@@ -11,6 +11,7 @@ DR-0001 は前身の実験リポ (LaserGuideV3) 側にあり、本リポには�
 - [DR-0006-edge-connection-model](./DR-0006-edge-connection-model.md) — v2 PassSegment 2 リスト差分方式を土台に rate マッピング統合 (Proposed)
 - [DR-0007-persistence-migration](./DR-0007-persistence-migration.md) — hardwareId のみで同一性判定、v1 設定 migration、Bundle ID 維持 (Proposed)
 - [DR-0008-calibration-ui](./DR-0008-calibration-ui.md) — キャリブレーション UI は WKWebView + JS の「純 view」 (Proposed)
+- [DR-0009-focus-flash-component](./DR-0009-focus-flash-component.md) — 第3コンポーネント「フォーカスフラッシュ」(段階実装 A=モニタ縁 → B=ウィンドウ枠) (Proposed)
 
 ## Archived
 
