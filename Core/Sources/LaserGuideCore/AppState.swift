@@ -105,6 +105,11 @@ public struct CalibrationState: Equatable, Sendable {
 public struct AppState: Equatable, Sendable {
     public var displays: [Display]
     public var userSegments: [PassSegment]
+    /// 現構成に対応する display を失った userSegments (DR-0007 決定 7 の inactive)。
+    /// reconcile で分離保持され、判定 (WarpTables) からは除外される。UI 可視化は
+    /// キャリブレーション UI の次ラウンドで扱うが、Phase 1 でも state 上には保持する
+    /// (モニタを一時的に外しただけで設定が失われないため)。
+    public var inactiveUserSegments: [PassSegment]
     /// displays/userSegments からのみ導出される derived state。displayConfigurationChanged と
     /// calibration(.commit) の reduce でのみ再構築する。
     public private(set) var tables: WarpTables
@@ -117,6 +122,7 @@ public struct AppState: Equatable, Sendable {
     public init(
         displays: [Display],
         userSegments: [PassSegment],
+        inactiveUserSegments: [PassSegment] = [],
         previousMouse: MouseHistoryEntry? = nil,
         currentMouse: MouseHistoryEntry? = nil,
         configuration: AppConfiguration = .default,
@@ -125,6 +131,7 @@ public struct AppState: Equatable, Sendable {
     ) {
         self.displays = displays
         self.userSegments = userSegments
+        self.inactiveUserSegments = inactiveUserSegments
         self.tables = WarpTables(displays: displays, userSegments: userSegments)
         self.previousMouse = previousMouse
         self.currentMouse = currentMouse

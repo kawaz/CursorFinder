@@ -40,14 +40,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         // displayConfigurationChanged では identity になるので、AppState を初期化する時点で
         // pose 込みで作る。
         let scan = DisplaySnapshotProvider.scan()
-        let displays = scan.snapshots.map { snap -> Display in
-            let pose = scan.initialPoses[snap.id] ?? .identity
-            return Display(id: snap.id, logicalBounds: snap.logicalBounds, pose: pose)
+        // DR-0007 永続化配線: v3 → v1 → none の順で試す。scale は現構成の値で上書きし、
+        // translate は保存値を尊重する (DR-0005 決定 2、DR-0007 決定 1 に基づく team-lead 指示)。
+        let boot = PersistenceBoot.loadAndPersist(
+            store: UserDefaults.standard,
+            currentSnapshots: scan.snapshots,
+            currentScaleByHardwareId: buildCurrentScaleMap(scan: scan),
+            currentPixelSizeByHardwareId: buildCurrentPixelSizeMap(scan: scan))
+        let initial: AppState
+        switch boot.outcome {
+        case let .usedPersisted(reconciled):
+            NSLog(
+                "[LaserGuide] persistence loaded: displays=\(reconciled.displays.count) userSegments=\(reconciled.userSegments.count) inactive=\(reconciled.inactiveUserSegments.count) didMigrateFromV1=\(boot.didMigrateFromV1) temporaryKeysDeleted=\(boot.temporaryKeysDeleted.count)"
+            )
+            initial = AppState(
+                displays: reconciled.displays,
+                userSegments: reconciled.userSegments,
+                inactiveUserSegments: reconciled.inactiveUserSegments)
+        case .noPersistence:
+            NSLog("[LaserGuide] persistence: none found, initializing from OS defaults")
+            let displays = scan.snapshots.map { snap -> Display in
+                let pose = scan.initialPoses[snap.id] ?? .identity
+                return Display(id: snap.id, logicalBounds: snap.logicalBounds, pose: pose)
+            }
+            // DR-0006 決定 5: 永続設定がまだ無い新規構成なので、userSegments は osPassSegments の
+            // コピーで初期化する (= userSegments: [] だと全継ぎ目が PB になり OS のネイティブ通過を
+            // 能動的にブロックしてしまう。2026-07-10 実機フィードバック #4 の確定原因)。
+            initial = AppState.initial(displays: displays)
         }
-        // DR-0006 決定 5: 永続設定がまだ無い新規構成なので、userSegments は osPassSegments の
-        // コピーで初期化する (= userSegments: [] だと全継ぎ目が PB になり OS のネイティブ通過を
-        // 能動的にブロックしてしまう。2026-07-10 実機フィードバック #4 の確定原因)。
-        let initial = AppState.initial(displays: displays)
         runtime = AppRuntime(initial: initial)
         runtime.setInterpreter(self)
         runtime.stateDidChange = { [weak self] state in
@@ -115,6 +135,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private func stopDragPositionMonitor() {
         if let m = dragPositionMonitor { NSEvent.removeMonitor(m) }
         dragPositionMonitor = nil
+    }
+
+    // MARK: - Persistence helpers
+
+    /// DR-0007 の V1Migration.migrate に渡す px サイズ辞書 (v3 hardwareId をキーに)。
+    /// logicalBounds は CG y-down px なので幅・高さがそのまま px 数になる。
+    private func buildCurrentPixelSizeMap(scan: DisplayScanResult) -> [String: V1CurrentPixelSize] {
+        Dictionary(uniqueKeysWithValues: scan.snapshots.map { snap in
+            (snap.id, V1CurrentPixelSize(
+                width: snap.logicalBounds.maxX - snap.logicalBounds.minX,
+                height: snap.logicalBounds.maxY - snap.logicalBounds.minY))
+        })
+    }
+
+    /// scan の initialPoses から scaleX/scaleY 辞書を作る (mm/px)。保存 pose の scale を
+    /// この値で上書きするために PersistenceBoot に渡す (DR-0005 決定 2)。
+    private func buildCurrentScaleMap(scan: DisplayScanResult) -> [String: (scaleX: Double, scaleY: Double)] {
+        var out: [String: (scaleX: Double, scaleY: Double)] = [:]
+        for (id, pose) in scan.initialPoses {
+            out[id] = (pose.scaleX, pose.scaleY)
+        }
+        return out
     }
 
     // MARK: - Screen change
@@ -272,7 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     // MARK: - EffectInterpreter
 
     func handlePersist(_ workspace: PersistedWorkspaceV3) {
-        // Phase 1: 永続化は未実装 (UserDefaults 経路は Persistence/ 所有者が実装中)。ログのみ。
+        // DR-0007 決定 2: v3 key へ書き込む。encode に失敗した場合は log のみ (プロセスが持つ
+        // state は残るので次回機会に再書き込みされる)。
+        PersistenceBoot.persist(workspace, to: UserDefaults.standard)
         let segCount = workspace.displays.reduce(0) { $0 + $1.userSegments.count }
         NSLog("[LaserGuide] persist v\(workspace.version): displays=\(workspace.displays.count) userSegments(total)=\(segCount)")
     }
