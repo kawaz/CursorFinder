@@ -1,5 +1,10 @@
 name: CI - Build and Test
 
+# リリース経路 (scripts/build-app-bundle.sh) の統合テスト。
+# unit test / lint は code-quality.yml が担うため、ここでは
+# 「.app バンドルが組み立てられて署名検証を通る」ことと、CD が前提とする
+# 構成ファイルの存在を検証する。
+
 on:
   push:
     branches: [ main ]
@@ -9,159 +14,42 @@ on:
 jobs:
   integration-tests:
     runs-on: macos-latest
-    
+
     steps:
-    - uses: actions/checkout@v5
-    
-    - name: Set up Xcode
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: latest-stable
-    
-    - name: Run Unit Tests
-      run: |
-        echo "🧪 Checking if test target exists..."
+      - uses: actions/checkout@v5
 
-        # Try to run tests and handle the case where no test target is configured
-        if xcodebuild test \
-          -project LaserGuide.xcodeproj \
-          -scheme LaserGuide \
-          -destination 'platform=macOS' \
-          -derivedDataPath build \
-          -enableCodeCoverage YES \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO 2>&1 | tee test_output.log; then
-          echo "✅ Tests completed successfully"
-        else
-          # Check if the error is due to no test target configured
-          if grep -q "not currently configured for the test action" test_output.log; then
-            echo "⚠️  No test target configured in scheme, skipping unit tests"
-            echo "Note: Test files exist but are not integrated into Xcode project"
-            echo "This is expected for the current project setup"
-          else
-            echo "❌ Tests failed for other reasons"
-            cat test_output.log
-            exit 1
-          fi
-        fi
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
-        # Clean up
-        rm -f test_output.log
-    
-    - name: Test CI/CD Pipeline Components
-      run: |
-        # Test that all required files exist for CI/CD
-        echo "🔍 Checking CI/CD pipeline components..."
+      - name: Check CI/CD pipeline components
+        run: |
+          echo "🔍 Checking CI/CD pipeline components..."
+          test -f .github/workflows/cd-auto-release-and-deploy.yml || { echo "❌ CD workflow missing"; exit 1; }
+          test -f .github/workflows/code-quality.yml || { echo "❌ Code quality workflow missing"; exit 1; }
+          test -f Casks/laserguide.rb || { echo "❌ Cask file missing"; exit 1; }
+          test -f justfile || { echo "❌ justfile missing"; exit 1; }
+          test -x scripts/build-app-bundle.sh || { echo "❌ build-app-bundle.sh missing or not executable"; exit 1; }
+          echo "🔍 Validating Cask syntax..."
+          ruby -c Casks/laserguide.rb || { echo "❌ Cask syntax error"; exit 1; }
+          echo "✅ All CI/CD components are present and valid"
 
-        # Check workflow files
-        test -f .github/workflows/cd-auto-release-and-deploy.yml || (echo "❌ CD workflow missing" && exit 1)
-        test -f .github/workflows/code-quality.yml || (echo "❌ Code quality workflow missing" && exit 1)
-        
-        # Check Cask file
-        test -f Casks/laserguide.rb || (echo "❌ Cask file missing" && exit 1)
-        
-        # Check Makefile
-        test -f Makefile || (echo "❌ Makefile missing" && exit 1)
-        
-        # Validate Cask syntax
-        echo "🔍 Validating Cask syntax..."
-        ruby -c Casks/laserguide.rb || (echo "❌ Cask syntax error" && exit 1)
-        
-        echo "✅ All CI/CD components are present and valid"
-    
-    - name: Test Build Process
-      run: |
-        echo "🔨 Testing build process..."
-        
-        # Test debug build (clean build like in CI)
-        xcodebuild clean build \
-          -scheme LaserGuide \
-          -configuration Debug \
-          -destination 'platform=macOS' \
-          -derivedDataPath build-test \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
-        
-        # Verify app was created
-        test -d build-test/Build/Products/Debug/LaserGuide.app || (echo "❌ Debug build failed" && exit 1)
-        
-        echo "✅ Build process test completed successfully"
-    
-    - name: Test Release Archive Process
-      run: |
-        echo "📦 Testing release archive process..."
-        
-        # Test release archive (similar to what CI/CD does)
-        xcodebuild -project LaserGuide.xcodeproj \
-          -scheme LaserGuide \
-          -configuration Release \
-          -derivedDataPath build-release \
-          -archivePath build-release/LaserGuide.xcarchive \
-          archive \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
-        
-        # Verify archive was created
-        test -d build-release/LaserGuide.xcarchive || (echo "❌ Release archive failed" && exit 1)
-        test -d build-release/LaserGuide.xcarchive/Products/Applications/LaserGuide.app || (echo "❌ App not found in archive" && exit 1)
-        
-        # Verify Universal Binary (if applicable)
-        BINARY_PATH="build-release/LaserGuide.xcarchive/Products/Applications/LaserGuide.app/Contents/MacOS/LaserGuide"
-        if [ -f "$BINARY_PATH" ]; then
-          echo "🔍 Checking binary architecture..."
-          file "$BINARY_PATH"
-          
-          # Check if it's a universal binary or at least arm64
-          if file "$BINARY_PATH" | grep -q "universal\|arm64"; then
-            echo "✅ Binary architecture is correct"
-          else
-            echo "⚠️  Binary may not be optimized for Apple Silicon"
-          fi
-        fi
-        
-        echo "✅ Release archive test completed successfully"
-    
-    - name: Test ZIP Creation Process
-      run: |
-        echo "🎁 Testing ZIP creation process..."
-        
-        # Create ZIP (similar to what CI/CD does)
-        cd build-release/LaserGuide.xcarchive/Products/Applications
-        zip -r ../../../../LaserGuide-test.zip LaserGuide.app
-        cd -
-        
-        # Verify ZIP was created and contains the app
-        test -f LaserGuide-test.zip || (echo "❌ ZIP creation failed" && exit 1)
-        
-        # Test ZIP contents
-        unzip -t LaserGuide-test.zip || (echo "❌ ZIP is corrupted" && exit 1)
-        
-        # Calculate SHA256 (similar to what CI/CD does)
-        SHA256=$(shasum -a 256 LaserGuide-test.zip | awk '{print $1}')
-        echo "SHA256: $SHA256"
-        
-        # Verify SHA256 format
-        [[ ${#SHA256} -eq 64 ]] || (echo "❌ Invalid SHA256 format" && exit 1)
-        
-        echo "✅ ZIP creation test completed successfully"
-    
-    - name: Generate Test Coverage Report
-      run: |
-        echo "📊 Generating test coverage report..."
-        
-        # Extract coverage data
-        xcrun xccov view --report --json build/Logs/Test/*.xcresult > coverage.json || true
-        
-        # Display coverage summary
-        if [ -f coverage.json ]; then
-          echo "✅ Coverage report generated"
-          # You could parse and display coverage metrics here
-        else
-          echo "⚠️  Coverage report not available"
-        fi
-    
-    - name: Cleanup Test Artifacts
-      run: |
-        echo "🧹 Cleaning up test artifacts..."
-        rm -rf build-test build-release LaserGuide-test.zip coverage.json
-        echo "✅ Cleanup completed"
+      - name: Build .app bundle (ad-hoc) and verify
+        run: |
+          echo "🔨 Testing .app bundle assembly (release build + ad-hoc codesign)..."
+          scripts/build-app-bundle.sh --version 0.0.0-ci
+          test -d build/app/LaserGuide.app || { echo "❌ .app bundle missing"; exit 1; }
+          codesign --verify --deep --strict build/app/LaserGuide.app
+          plutil -lint build/app/LaserGuide.app/Contents/Info.plist
+          echo "✅ Bundle assembly test completed successfully"
+
+      - name: Test ZIP creation and checksum
+        run: |
+          echo "🎁 Testing ZIP creation (same shape as CD)..."
+          ditto -c -k --keepParent build/app/LaserGuide.app LaserGuide-test.zip
+          unzip -t LaserGuide-test.zip > /dev/null || { echo "❌ ZIP is corrupted"; exit 1; }
+          SHA256=$(shasum -a 256 LaserGuide-test.zip | awk '{print $1}')
+          [[ ${#SHA256} -eq 64 ]] || { echo "❌ Invalid SHA256 format"; exit 1; }
+          echo "SHA256: $SHA256"
+          echo "✅ ZIP creation test completed successfully"

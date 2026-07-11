@@ -7,6 +7,7 @@
 // タイマーでまとめて反映される」「1 interval 内の複数回呼び出しは最後の値だけが残る」
 // ことを固定する。
 import XCTest
+import Combine
 @testable import LaserGuideDev
 import LaserGuideCore
 
@@ -20,6 +21,21 @@ final class OverlayViewModelTests: XCTestCase {
             state.currentMouse = MouseHistoryEntry(point: mouse, displayId: displayId)
         }
         return state
+    }
+
+    /// main run loop を回しながら条件成立を待つ。タイマー減衰 (fade) 系の検証は
+    /// 「この壁時計時刻には完了しているはず」を assert すると共有 CI runner の負荷で
+    /// Timer 発火が遅延した時に破綻する (2026-07-11 の main CI 初回実走行で実際に発生)。
+    /// 検証の意図は「最終的にその状態へ到達する」ことなので、到達を待って assert する。
+    /// timeout は「遅い runner でも確実に足りる」側に倒す (到達すれば即 return するので
+    /// 速い環境でテストが遅くなることはない)。
+    @discardableResult
+    private func waitUntil(timeout: TimeInterval = 5.0, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return condition()
     }
 
     /// リーディングエッジ (第 3 ラウンド裁定「即値で使う一択」): 前回反映から flushInterval 以上
@@ -49,12 +65,8 @@ final class OverlayViewModelTests: XCTestCase {
         XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 1, y: 1),
                        "interval 内の後続入力は即時反映されない (最初の値のまま)")
 
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
-        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 3, y: 3),
-                       "トレーリング flush で反映されるのは最後の値のみ (中間値 (2,2) は捨てられる)")
+        XCTAssertTrue(waitUntil { vm.currentMouseLocation == LogicalPoint(x: 3, y: 3) },
+                      "トレーリング flush で反映されるのは最後の値のみ (中間値 (2,2) は捨てられる)")
     }
 
     /// apply(state:) も同じスロットルに乗る (tap 経由の高頻度更新も同じ経路を通ることの固定)。
@@ -75,11 +87,8 @@ final class OverlayViewModelTests: XCTestCase {
         vm.apply(state: moved2)
         XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 500, y: 500), "interval 内は未反映")
 
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
-        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 600, y: 600), "trailing flush で最新 state が反映")
+        XCTAssertTrue(waitUntil { vm.currentMouseLocation == LogicalPoint(x: 600, y: 600) },
+                      "trailing flush で最新 state が反映")
     }
 
     /// state 更新のうちマウス位置が変化しないもの (displayConfigurationChanged 等) は、
@@ -95,10 +104,8 @@ final class OverlayViewModelTests: XCTestCase {
         // 同じマウス位置のまま state だけ更新 (例: displayConfigurationChanged 相当)
         vm.apply(state: initial)
 
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
+        // 負の検証 (「表示されない」) は到達待ちができないので、flush が確実に済む猶予だけ回す
+        waitUntil(timeout: 0.1) { false }
         XCTAssertEqual(vm.laserOpacity, 0, "マウス位置が変わっていないので表示されない")
     }
 
@@ -121,15 +128,14 @@ final class OverlayViewModelTests: XCTestCase {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.005
         vm.laserShowDebounce = 0.05
-        vm.inactivityThreshold = 0.5  // 継続移動の途中で「停止」扱いにならないよう長めに
+        vm.inactivityThreshold = 10  // 遅い CI runner の待機中に「停止」扱いへ落ちないよう実質無効化
 
+        let start = ProcessInfo.processInfo.systemUptime
         vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
         XCTAssertEqual(vm.laserOpacity, 0, "開始直後はまだ表示しない")
 
-        // デバウンス時間を跨いで移動を継続する
-        let exp = expectation(description: "sustain")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
+        // デバウンス時間を確実に跨いでから移動を継続する (壁時計固定でなく経過時間で判定)
+        XCTAssertTrue(waitUntil { ProcessInfo.processInfo.systemUptime - start >= 0.06 })
         vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
 
         XCTAssertEqual(vm.laserOpacity, 1, "デバウンスを超えて移動が継続したら表示")
@@ -144,10 +150,10 @@ final class OverlayViewModelTests: XCTestCase {
         vm.inactivityThreshold = 0.03  // すぐ「停止」扱いになるよう短めに
 
         vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
-        // 停止判定 (inactivityThreshold) を跨いでから次の単発移動
-        let exp = expectation(description: "gap")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
+        // 停止判定 (inactivityThreshold=0.03) を確実に跨ぐ猶予を回してから次の単発移動。
+        // gap (0.5s) > デバウンス (0.3s) にしてあるため、もし起点リセットが壊れていたら
+        // 「経過時間の合算でデバウンス超え → 表示」となり、この test が検出する。
+        waitUntil(timeout: 0.5) { false }
         vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
 
         XCTAssertEqual(vm.laserOpacity, 0,
@@ -163,21 +169,19 @@ final class OverlayViewModelTests: XCTestCase {
         vm.inactivityThreshold = 0.05
         vm.laserFadeOutDuration = 0.3
 
+        // 「段階的に減衰する」の検証は壁時計時刻でのサンプリングだと遅い CI runner で
+        // 破綻する (2026-07-11 main CI 初回実走行で発生) ため、@Published の全遷移を
+        // 記録して「最終的に 0 へ到達」+「中間値を経由した」の 2 点で固定する。
+        var observed: [Double] = []
+        let sub = vm.$laserOpacity.sink { observed.append($0) }
+        defer { sub.cancel() }
+
         vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
         XCTAssertEqual(vm.laserOpacity, 1)
 
-        // 停止 → フェード中間点: 0 と 1 の間の値 (即消しでも維持でもない)
-        let mid = expectation(description: "mid-fade")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { mid.fulfill() }
-        wait(for: [mid], timeout: 1.0)
-        XCTAssertGreaterThan(vm.laserOpacity, 0, "フェード途中で 0 に落ちていない (即消しではない)")
-        XCTAssertLessThan(vm.laserOpacity, 1, "フェードが始まっている (維持でもない)")
-
-        // フェード完了: opacity 0
-        let done = expectation(description: "fade-done")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { done.fulfill() }
-        wait(for: [done], timeout: 1.0)
-        XCTAssertEqual(vm.laserOpacity, 0, "laserFadeOutDuration 経過で完全に消える")
+        XCTAssertTrue(waitUntil { vm.laserOpacity == 0 }, "停止後、最終的に完全に消える")
+        XCTAssertTrue(observed.contains { $0 > 0 && $0 < 1 },
+                      "0 と 1 の中間値を経由して減衰している (即消しではない)")
     }
 
     /// フェード中の移動再開は即フル輝度に復帰する (直前まで見えていたレーザーの継続なので
@@ -185,21 +189,18 @@ final class OverlayViewModelTests: XCTestCase {
     func testMovementDuringFadeRestoresFullOpacityImmediately() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.005
-        vm.laserShowDebounce = 10  // 復帰にデバウンスが誤適用されたら即検出できる大きい値
         vm.inactivityThreshold = 0.05
-        vm.laserFadeOutDuration = 0.5
+        // フェードを十分長くし、遅い CI runner でも「フェード開始〜介入」の間に 0 まで
+        // 落ち切らないようにする (fade 開始の検知は waitUntil で行い、壁時計に依存しない)
+        vm.laserFadeOutDuration = 5
 
         // 表示状態を作る (デバウンスを回避するため一時的に 0 で点灯させる)
         vm.laserShowDebounce = 0
         vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
         XCTAssertEqual(vm.laserOpacity, 1)
-        vm.laserShowDebounce = 10
+        vm.laserShowDebounce = 10  // 復帰にデバウンスが誤適用されたら即検出できる大きい値
 
-        // フェード中間まで待つ
-        let mid = expectation(description: "mid-fade")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { mid.fulfill() }
-        wait(for: [mid], timeout: 1.0)
-        XCTAssertLessThan(vm.laserOpacity, 1, "前提: フェードが進行中")
+        XCTAssertTrue(waitUntil { vm.laserOpacity < 1 }, "前提: フェードが進行中")
         XCTAssertGreaterThan(vm.laserOpacity, 0, "前提: まだ消えていない")
 
         vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
@@ -235,10 +236,8 @@ final class OverlayViewModelTests: XCTestCase {
         // 直後は減衰中 (まだ opacity > 0)
         XCTAssertNotNil(vm.clickCircle)
 
-        let exp = expectation(description: "fade")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-        XCTAssertNil(vm.clickCircle, "clickFadeDuration 経過後に clickCircle=nil に戻る")
+        XCTAssertTrue(waitUntil { vm.clickCircle == nil },
+                      "clickFadeDuration 経過後に clickCircle=nil に戻る")
     }
 
     /// 2026-07-10 第 2 ラウンド #2 + 第 3 ラウンド裁定: down 後の drag はサークルの point だけを
@@ -266,11 +265,8 @@ final class OverlayViewModelTests: XCTestCase {
             phase: .drag, point: LogicalPoint(x: 500, y: 600)))
         XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 300, y: 400), "interval 内は未反映")
 
-        let exp = expectation(description: "flush")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-
-        XCTAssertEqual(vm.clickCircle?.point, LogicalPoint(x: 500, y: 600), "trailing flush で最後の drag 位置が反映")
+        XCTAssertTrue(waitUntil { vm.clickCircle?.point == LogicalPoint(x: 500, y: 600) },
+                      "trailing flush で最後の drag 位置が反映")
         XCTAssertEqual(vm.clickCircle?.opacity, 0.6, "drag では opacity が変わらない")
     }
 
@@ -285,10 +281,7 @@ final class OverlayViewModelTests: XCTestCase {
         vm.apply(presentationClick: PresentationClickEvent(
             phase: .up, point: LogicalPoint(x: 0, y: 0)))
 
-        let exp = expectation(description: "fade complete")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-        XCTAssertNil(vm.clickCircle, "前提: fade 完了で nil")
+        XCTAssertTrue(waitUntil { vm.clickCircle == nil }, "前提: fade 完了で nil")
 
         vm.apply(presentationClick: PresentationClickEvent(
             phase: .drag, point: LogicalPoint(x: 999, y: 999)))
@@ -355,21 +348,16 @@ final class OverlayViewModelTests: XCTestCase {
         s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
         vm.apply(state: s1)
 
-        let exp1 = expectation(description: "first")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { exp1.fulfill() }
-        wait(for: [exp1], timeout: 1.0)
-
-        // 少し減衰してから同じ displayId で generation++
+        // 1 回目の減衰がはっきり進むまで待つ (0.45 未満 = initial 0.6 から複数 tick 分減衰。
+        // 再発火直後との比較マージンを確保し、遅い runner での際どい大小比較を避ける)
+        XCTAssertTrue(waitUntil { (vm.focusFlash?.opacity ?? 1) < 0.45 }, "前提: 1 回目の減衰が進む")
         let opacityAfterFirst = vm.focusFlash?.opacity ?? 0
 
         var s2 = makeState(mouse: nil)
         s2.focusFlash = FocusFlashState(displayId: "A", generation: 2)
         vm.apply(state: s2)
 
-        let exp2 = expectation(description: "second")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp2.fulfill() }
-        wait(for: [exp2], timeout: 1.0)
-
+        // 前回 flush から 0.45s 以上経過しているのでリーディングエッジで即時反映される
         XCTAssertNotNil(vm.focusFlash, "再発火で復活")
         // 再発火後の opacity は 1 回目の減衰値より上 (initial 付近まで戻る)
         XCTAssertGreaterThan(vm.focusFlash?.opacity ?? -1, opacityAfterFirst,
@@ -385,21 +373,16 @@ final class OverlayViewModelTests: XCTestCase {
 
         var s1 = makeState(mouse: nil)
         s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
-        vm.apply(state: s1)
-
-        let exp1 = expectation(description: "rise")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp1.fulfill() }
-        wait(for: [exp1], timeout: 1.0)
+        vm.apply(state: s1)  // 初回 state はリーディングエッジで即時反映
         XCTAssertNotNil(vm.focusFlash)
 
         vm.clearFocusFlash()
         XCTAssertNil(vm.focusFlash, "clearFocusFlash で即座に消える")
 
-        // 同じ generation (=1) の state をもう一度流しても再生しない (見なかったとして扱う)
+        // 同じ generation (=1) の state をもう一度流しても再生しない (見なかったとして扱う)。
+        // 負の検証なので、trailing flush が確実に済む猶予だけ回してから assert する
         vm.apply(state: s1)
-        let exp2 = expectation(description: "no-refire")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp2.fulfill() }
-        wait(for: [exp2], timeout: 1.0)
+        waitUntil(timeout: 0.1) { false }
         XCTAssertNil(vm.focusFlash, "同じ generation で再発火しない")
     }
 }
