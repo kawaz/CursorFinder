@@ -30,9 +30,10 @@ struct LaserOverlayView: View {
                 guard let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) else { return }
                 let bounds = selfDisplay.logicalBounds
 
-                // #2 アイドル時は非描画 (移動再開で再表示)。currentMouseLocation は保持したままにし、
-                //   再表示時に前回位置から瞬時に描き始める。
-                guard model.isMouseActive, let mouseGlobal = model.currentMouseLocation else { return }
+                // アイドル時 (laserOpacity=0) は非描画。currentMouseLocation は保持したままにし、
+                // 再表示時に前回位置から瞬時に描き始める。フェード中 (0 < opacity < 1) は
+                // 下の .opacity() でレーザー全体が減衰して見える。
+                guard model.laserOpacity > 0, let mouseGlobal = model.currentMouseLocation else { return }
 
                 // #1 自ディスプレイの 4 隅のみ。#4 pose を経由しない。
                 let target = LaserGeometry.viewLocal(mouseGlobal, in: bounds)
@@ -42,6 +43,7 @@ struct LaserOverlayView: View {
                 }
             }
             .drawingGroup(opaque: false, colorMode: .nonLinear)
+            .opacity(model.laserOpacity)
             .allowsHitTesting(false)
 
             // プレゼンテーションモード時のクリック可視化サークル。off 時 / 減衰完了時は clickCircle=nil で

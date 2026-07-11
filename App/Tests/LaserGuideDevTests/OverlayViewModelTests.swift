@@ -29,9 +29,11 @@ final class OverlayViewModelTests: XCTestCase {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
 
+        vm.laserShowDebounce = 0  // 表示デバウンスは別テストで検証、ここではスロットルに集中
+
         vm.apply(mouseLocation: LogicalPoint(x: 100, y: 100))
         XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 100, y: 100), "初回入力は即時反映")
-        XCTAssertTrue(vm.isMouseActive, "位置が変わったので即 active になる")
+        XCTAssertEqual(vm.laserOpacity, 1, "位置が変わったので即表示になる (デバウンス 0)")
     }
 
     /// トレーリングエッジ (スロットル本体): 直前の反映から interval 内に続く入力は即時反映されず、
@@ -60,11 +62,12 @@ final class OverlayViewModelTests: XCTestCase {
     func testApplyStateIsThrottledAndActivatesOnPositionChange() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02
+        vm.laserShowDebounce = 0  // 表示デバウンスは別テストで検証、ここではスロットルに集中
 
         let moved = makeState(mouse: LogicalPoint(x: 500, y: 500))
         vm.apply(state: moved)
         XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 500, y: 500), "初回 state は即時反映")
-        XCTAssertTrue(vm.isMouseActive)
+        XCTAssertEqual(vm.laserOpacity, 1, "位置が変わったので即表示になる (デバウンス 0)")
         XCTAssertEqual(vm.state.currentMouse?.point, LogicalPoint(x: 500, y: 500))
 
         // interval 内の後続 state は即時反映されず、trailing でまとめて反映される
@@ -80,13 +83,14 @@ final class OverlayViewModelTests: XCTestCase {
     }
 
     /// state 更新のうちマウス位置が変化しないもの (displayConfigurationChanged 等) は、
-    /// flush 後も isMouseActive を勝手に true へ倒さない (無関係な state 変化で
+    /// flush 後もレーザーを勝手に表示側へ倒さない (無関係な state 変化で
     /// アイドルフェードが再表示側にリセットされてしまう回帰を防ぐ)。
     func testApplyStateWithUnchangedMouseLocationDoesNotReactivate() {
         let initial = makeState(mouse: LogicalPoint(x: 10, y: 10))
         let vm = OverlayViewModel(initialState: initial, initialMouse: LogicalPoint(x: 10, y: 10))
         vm.flushInterval = 0.02
-        XCTAssertFalse(vm.isMouseActive, "初期状態は非 active")
+        vm.laserShowDebounce = 0
+        XCTAssertEqual(vm.laserOpacity, 0, "初期状態は非表示")
 
         // 同じマウス位置のまま state だけ更新 (例: displayConfigurationChanged 相当)
         vm.apply(state: initial)
@@ -95,7 +99,111 @@ final class OverlayViewModelTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { exp.fulfill() }
         wait(for: [exp], timeout: 1.0)
 
-        XCTAssertFalse(vm.isMouseActive, "マウス位置が変わっていないので active化しない")
+        XCTAssertEqual(vm.laserOpacity, 0, "マウス位置が変わっていないので表示されない")
+    }
+
+    // MARK: - レーザー表示デバウンス + フェードアウト (2026-07-11 第 4 ラウンド)
+
+    /// 表示デバウンス: 単発の微小移動 (継続時間 < laserShowDebounce) ではレーザーを表示しない
+    /// (タッチパッドに触れただけで出るのを防ぐ)。位置の追跡 (currentMouseLocation) 自体は行う。
+    func testBriefMovementDoesNotShowLaser() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.005
+        vm.laserShowDebounce = 0.2
+
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
+        XCTAssertEqual(vm.laserOpacity, 0, "デバウンス未満の移動では表示しない")
+        XCTAssertEqual(vm.currentMouseLocation, LogicalPoint(x: 1, y: 1), "位置追跡はデバウンスと無関係に行う")
+    }
+
+    /// 表示デバウンス: 連続移動が laserShowDebounce を超えて継続したら表示する。
+    func testSustainedMovementShowsLaserAfterDebounce() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.005
+        vm.laserShowDebounce = 0.05
+        vm.inactivityThreshold = 0.5  // 継続移動の途中で「停止」扱いにならないよう長めに
+
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
+        XCTAssertEqual(vm.laserOpacity, 0, "開始直後はまだ表示しない")
+
+        // デバウンス時間を跨いで移動を継続する
+        let exp = expectation(description: "sustain")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+        vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
+
+        XCTAssertEqual(vm.laserOpacity, 1, "デバウンスを超えて移動が継続したら表示")
+    }
+
+    /// 移動停止で連続移動の起点はリセットされる: 「触る → 止まる → また触る」のような
+    /// 断続的な移動は、各回がデバウンス未満なら何度繰り返しても表示されない。
+    func testIntermittentBriefMovementsNeverShowLaser() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.005
+        vm.laserShowDebounce = 0.3
+        vm.inactivityThreshold = 0.03  // すぐ「停止」扱いになるよう短めに
+
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
+        // 停止判定 (inactivityThreshold) を跨いでから次の単発移動
+        let exp = expectation(description: "gap")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+        vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
+
+        XCTAssertEqual(vm.laserOpacity, 0,
+                       "起点がリセットされるため、断続的な単発移動の合算でデバウンスを超えても表示されない")
+    }
+
+    /// フェードアウト: 移動停止から inactivityThreshold 後、即消しではなく laserFadeOutDuration
+    /// かけて opacity が段階的に 0 へ減衰する (「スーッと消える」の固定)。
+    func testLaserFadesOutGraduallyAfterInactivity() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.005
+        vm.laserShowDebounce = 0
+        vm.inactivityThreshold = 0.05
+        vm.laserFadeOutDuration = 0.3
+
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
+        XCTAssertEqual(vm.laserOpacity, 1)
+
+        // 停止 → フェード中間点: 0 と 1 の間の値 (即消しでも維持でもない)
+        let mid = expectation(description: "mid-fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { mid.fulfill() }
+        wait(for: [mid], timeout: 1.0)
+        XCTAssertGreaterThan(vm.laserOpacity, 0, "フェード途中で 0 に落ちていない (即消しではない)")
+        XCTAssertLessThan(vm.laserOpacity, 1, "フェードが始まっている (維持でもない)")
+
+        // フェード完了: opacity 0
+        let done = expectation(description: "fade-done")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { done.fulfill() }
+        wait(for: [done], timeout: 1.0)
+        XCTAssertEqual(vm.laserOpacity, 0, "laserFadeOutDuration 経過で完全に消える")
+    }
+
+    /// フェード中の移動再開は即フル輝度に復帰する (直前まで見えていたレーザーの継続なので
+    /// 表示デバウンスは課さない)。
+    func testMovementDuringFadeRestoresFullOpacityImmediately() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.005
+        vm.laserShowDebounce = 10  // 復帰にデバウンスが誤適用されたら即検出できる大きい値
+        vm.inactivityThreshold = 0.05
+        vm.laserFadeOutDuration = 0.5
+
+        // 表示状態を作る (デバウンスを回避するため一時的に 0 で点灯させる)
+        vm.laserShowDebounce = 0
+        vm.apply(mouseLocation: LogicalPoint(x: 1, y: 1))
+        XCTAssertEqual(vm.laserOpacity, 1)
+        vm.laserShowDebounce = 10
+
+        // フェード中間まで待つ
+        let mid = expectation(description: "mid-fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { mid.fulfill() }
+        wait(for: [mid], timeout: 1.0)
+        XCTAssertLessThan(vm.laserOpacity, 1, "前提: フェードが進行中")
+        XCTAssertGreaterThan(vm.laserOpacity, 0, "前提: まだ消えていない")
+
+        vm.apply(mouseLocation: LogicalPoint(x: 2, y: 2))
+        XCTAssertEqual(vm.laserOpacity, 1, "フェード中の移動再開はデバウンス無しで即フル復帰")
     }
 
     // MARK: - プレゼンテーションモード (issue: presentation-mode-capture-toggle)

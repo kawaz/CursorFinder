@@ -8,9 +8,10 @@
 //   - 権限なし (fallback): NSEvent global monitor (permission fallback 起動時のみ購読)
 // どちらも同じ CG y-down 論理座標として `currentMouseLocation` に反映される。
 //
-// 2026-07-10 フィードバック #2 (アイドルフェード):
-//   ポインタ移動が停止したら inactivityThreshold 経過後にレーザーを非表示にする
-//   (v1 の debounce 0.3s と同等)。位置変化時のみ debounce をリセットして再表示。
+// レーザーの表示ライフサイクル (2026-07-10 #2 → 2026-07-11 第 4 ラウンドで opacity ベースに拡張):
+//   非表示 → (連続移動が laserShowDebounce 継続) → 表示 (opacity=1)
+//   表示 → (移動停止から inactivityThreshold) → laserFadeOutDuration かけてフェードアウト
+//   フェード中 → (移動再開) → 即フル輝度復帰 (デバウンス無し)
 //
 // 2026-07-10 第 2 ラウンド フィードバック #5 (描画更新のスロットル合流):
 //   tap 経由 (apply(state:)) も drag monitor 経由 (apply(mouseLocation:)) も、OS のイベント
@@ -30,60 +31,20 @@ import AppKit
 import Combine
 import LaserGuideCore
 
-/// プレゼンテーションモード時にオーバーレイへ流し込む click 表現の Action 型。
-/// NSEvent global monitor 由来の生イベントを AppDelegate で本型に変換して VM に流す
-/// (= issue 2026-07-10-presentation-mode-capture-toggle.md「Action として形式化」の要件)。
-///
-/// Core.Action ではなく App 層の Action にしている理由: click 可視化はワープ判定や永続化に
-/// 影響しない純粋な表示専用イベントで、AppState の source of truth に含める必要が無い。
-/// DR-0004 の「描画は state 購読」を狭義に守るために Core を膨らませるより、App 層の VM に
-/// 明示的な入力口を用意する方が Phase 1 のコストに見合う (Core Action への昇格は Phase 2)。
-public struct PresentationClickEvent: Equatable, Sendable {
-    /// 2026-07-10 実機フィードバック第 2 ラウンド #2: `drag` はボタンを押している間の位置更新。
-    /// down で表示開始したサークルの `point` だけを更新し、opacity は変えない
-    /// (= ドラッグ中は消えずカーソルに追従、離した位置から減衰が始まる)。
-    public enum Phase: Equatable, Sendable { case down, drag, up }
-    public let phase: Phase
-    public let point: LogicalPoint
-    public init(phase: Phase, point: LogicalPoint) {
-        self.phase = phase
-        self.point = point
-    }
-}
-
-/// クリック可視化サークルの表示状態 (プレゼンテーションモード on 時のみ描画される)。
-public struct ClickCirclePresentation: Equatable, Sendable {
-    public let point: LogicalPoint
-    /// 0.0 = 完全透明、1.0 = 完全不透明。mouseDown で initial 値、mouseUp 後に段階的に減衰する。
-    public let opacity: Double
-    public init(point: LogicalPoint, opacity: Double) {
-        self.point = point
-        self.opacity = opacity
-    }
-}
-
-/// フォーカスフラッシュ (DR-0009 Phase A) の描画表現。overlay ごとに保持する。
-///
-/// Core (`FocusFlashState`) は「どのモニタに向けてフラッシュを立てたか」と「連続発火の識別用
-/// generation」だけを持ち、時刻・フェード進行は描画層 (VM) が管理する (DR-0004 の「Store は
-/// 純関数、時刻・非決定性を持ち込まない」を維持するため)。
-/// - `displayId`: フォーカス先のモニタ id。LaserOverlayView は自 display と一致した時のみ縁を描く
-/// - `opacity`: 立ち上がり直後は `initialOpacity`、時間経過で 0 まで減衰
-public struct FocusFlashPresentation: Equatable, Sendable {
-    public let displayId: String
-    public let opacity: Double
-    public init(displayId: String, opacity: Double) {
-        self.displayId = displayId
-        self.opacity = opacity
-    }
-}
+// 表示表現型 (PresentationClickEvent / ClickCirclePresentation / FocusFlashPresentation) は
+// OverlayPresentation.swift に分離。
 
 public final class OverlayViewModel: ObservableObject {
     @Published public var state: AppState
     @Published public var currentMouseLocation: LogicalPoint?
-    /// #2 アイドルフェード: 直近 inactivityThreshold の間にマウス移動があったか。
-    /// false の間、LaserOverlayView は描画をスキップする。
-    @Published public var isMouseActive: Bool = false
+    /// レーザーの表示不透明度 (0 = 非表示、1 = フル表示)。
+    /// 2026-07-11 実機第 4 ラウンド: Bool の即時 on/off をやめ、opacity ベースに変更。
+    /// - 立ち上がり: 連続移動が laserShowDebounce 継続して初めて 1 になる (タッチパッドに
+    ///   触れただけの偶発的な微小移動でレーザーが出るのを防ぐ)
+    /// - 消灯: 移動停止から inactivityThreshold 後、laserFadeOutDuration かけて 0 へ減衰
+    ///   (即消しではなくスーッと消える)。減衰中に移動が再開したら即 1 に復帰する
+    ///   (= 直前まで見えていたレーザーの継続なのでデバウンスは課さない)
+    @Published public var laserOpacity: Double = 0
     /// プレゼンテーションモード on 時のクリック可視化。off 時 / mouseUp 後の減衰完了時は nil。
     @Published public var clickCircle: ClickCirclePresentation?
     /// フォーカスフラッシュ (DR-0009 Phase A) の現在描画状態。
@@ -91,8 +52,18 @@ public final class OverlayViewModel: ObservableObject {
     /// 減衰完了時 / focus flash 機能 off 時は nil。
     @Published public var focusFlash: FocusFlashPresentation?
 
-    /// ポインタ移動停止からレーザーを消すまでの猶予 (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
+    /// ポインタ移動停止からレーザーの消灯 (フェード開始) までの猶予
+    /// (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
     public var inactivityThreshold: TimeInterval = 0.3
+
+    /// レーザー表示開始のデバウンス: この時間以上「連続して」移動が続いて初めて表示する。
+    /// タッチパッドに触れただけの偶発的な微小移動 (継続時間 < デバウンス) では表示しない
+    /// (2026-07-11 実機第 4 ラウンドの kawaz 要望)。テスト用に注入可能。
+    public var laserShowDebounce: TimeInterval = 0.3
+
+    /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値で、
+    /// 実機フィードバックで再調整前提の初期値。テスト用に注入可能。
+    public var laserFadeOutDuration: TimeInterval = 0.4
 
     /// coalesce タイマーの周期 (60Hz = 約16.67ms)。テストで注入できるよう var にしておく。
     public var flushInterval: TimeInterval = 1.0 / 60.0
@@ -109,6 +80,11 @@ public final class OverlayViewModel: ObservableObject {
     public var focusFlashInitialOpacity: Double = 0.6
 
     private var inactivityWorkItem: DispatchWorkItem?
+    /// 現在の連続移動の開始時刻 (systemUptime 秒)。非表示中の移動で記録を開始し、
+    /// laserShowDebounce を超えて移動が継続したら表示に昇格する。移動停止で nil に戻る
+    /// (= 次の移動はまた新しい連続移動として数え直す)。
+    private var movementStartedAt: TimeInterval?
+    private var laserFadeTimer: Timer?
     private var pendingState: AppState?
     private var pendingMouseLocation: LogicalPoint?
     /// 2026-07-10 レビュー指摘 major-1: `.drag` フェーズの point 更新も他の高頻度入力
@@ -331,13 +307,55 @@ public final class OverlayViewModel: ObservableObject {
         lastFocusFlashGeneration = state.focusFlash?.generation ?? 0
     }
 
+    /// ポインタ移動 (位置変化) のたびに呼ばれる (スロットル済み ≤60Hz)。
     private func markActive() {
-        isMouseActive = true
+        let now = ProcessInfo.processInfo.systemUptime
+        if laserOpacity > 0 {
+            // 表示中 (フェード減衰中含む): 直前まで見えていたレーザーの継続なので
+            // デバウンスは課さず即フル輝度に復帰する。
+            laserFadeTimer?.invalidate()
+            laserFadeTimer = nil
+            laserOpacity = 1
+        } else {
+            // 非表示中: 連続移動が laserShowDebounce 継続して初めて表示する
+            // (タッチパッドに触れただけの単発的な微小移動では出さない)。
+            let startedAt = movementStartedAt ?? now
+            movementStartedAt = startedAt
+            if now - startedAt >= laserShowDebounce {
+                laserOpacity = 1
+            }
+        }
+        // 移動停止の検知 (トレーリングデバウンス): 位置変化が inactivityThreshold 途切れたら停止。
         inactivityWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.isMouseActive = false
+            self?.movementStopped()
         }
         inactivityWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + inactivityThreshold, execute: item)
+    }
+
+    /// 移動停止時: 連続移動の起点をリセットし (次の移動はデバウンスからやり直し)、
+    /// 表示中ならフェードアウトを開始する。
+    private func movementStopped() {
+        movementStartedAt = nil
+        guard laserOpacity > 0 else { return }
+        laserFadeTimer?.invalidate()
+        let step: TimeInterval = 0.03
+        let ticks = max(1, Int(laserFadeOutDuration / step))
+        let delta = 1.0 / Double(ticks)
+        let timer = Timer(timeInterval: step, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let next = self.laserOpacity - delta
+            if next <= 0 {
+                self.laserOpacity = 0
+                t.invalidate()
+                self.laserFadeTimer = nil
+            } else {
+                self.laserOpacity = next
+            }
+        }
+        laserFadeTimer = timer
+        // .common: フェード中にウィンドウドラッグ等の .eventTracking モードへ入っても減衰が止まらないように。
+        RunLoop.main.add(timer, forMode: .common)
     }
 }
