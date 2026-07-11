@@ -8,6 +8,7 @@
 // ことを固定する。
 import XCTest
 import Combine
+import CoreGraphics
 @testable import LaserGuideDev
 import LaserGuideCore
 
@@ -327,7 +328,8 @@ final class OverlayViewModelTests: XCTestCase {
         vm.focusFlashDuration = 1.0  // 直後の消滅を防ぐため長めに
 
         var next = makeState(mouse: nil)
-        next.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        next.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
         vm.apply(state: next)
 
         XCTAssertNotNil(vm.focusFlash, "初回 state はリーディングエッジで即時立ち上がる")
@@ -345,7 +347,8 @@ final class OverlayViewModelTests: XCTestCase {
         vm.focusFlashDuration = 2.0  // 減衰完了前に再発火させる
 
         var s1 = makeState(mouse: nil)
-        s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        s1.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
         vm.apply(state: s1)
 
         // 1 回目の減衰がはっきり進むまで待つ (0.45 未満 = initial 0.6 から複数 tick 分減衰。
@@ -354,7 +357,8 @@ final class OverlayViewModelTests: XCTestCase {
         let opacityAfterFirst = vm.focusFlash?.opacity ?? 0
 
         var s2 = makeState(mouse: nil)
-        s2.focusFlash = FocusFlashState(displayId: "A", generation: 2)
+        s2.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 2)
         vm.apply(state: s2)
 
         // 前回 flush から 0.45s 以上経過しているのでリーディングエッジで即時反映される
@@ -372,7 +376,8 @@ final class OverlayViewModelTests: XCTestCase {
         vm.focusFlashDuration = 2.0
 
         var s1 = makeState(mouse: nil)
-        s1.focusFlash = FocusFlashState(displayId: "A", generation: 1)
+        s1.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
         vm.apply(state: s1)  // 初回 state はリーディングエッジで即時反映
         XCTAssertNotNil(vm.focusFlash)
 
@@ -384,5 +389,124 @@ final class OverlayViewModelTests: XCTestCase {
         vm.apply(state: s1)
         waitUntil(timeout: 0.1) { false }
         XCTAssertNil(vm.focusFlash, "同じ generation で再発火しない")
+    }
+
+    // MARK: - フォーカス波動 (DR-0011)
+
+    /// state.focusFlash の generation 変化 (nil→非 nil) で wave が立ち上がり、mm 空間の震源が
+    /// windowFrame から正しく写像され、進行に伴い radiusMM が単調増加し、waveDuration 経過後に
+    /// nil へ遷移する (= startWave のライフサイクル一巡の固定)。
+    func testWaveRisesOnFocusChangeRadiusMonotonicallyIncreasesThenClears() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.waveDuration = 0.3  // テスト時間短縮
+        vm.waveInitialOpacity = 0.5
+
+        let windowFrame = LogicalRect(minX: 100, minY: 100, maxX: 300, maxY: 300)
+        var next = makeState(mouse: nil)
+        next.focusFlash = FocusFlashState(displayId: "A", windowFrame: windowFrame, generation: 1)
+        vm.apply(state: next)
+
+        XCTAssertNotNil(vm.wave, "初回 state はリーディングエッジで即時立ち上がる")
+        // makeState の display は DisplayPose.identity (translate=(0,0), scale=1) の単一 display 構成。
+        // WaveLayout.placements は anchor (= 論理 (0,0) を含むこの display) の mmRect.min を (0,0) に
+        // 置くため、mm 空間は論理 px 空間と恒等写像になり、震源 mmRect は windowFrame とビット一致する
+        // (WavePlacement.toMM: mmRect.minX + (p.x - logicalBounds.minX) * scaleX = 0 + p.x * 1)。
+        XCTAssertEqual(vm.wave?.epicenterMM, PhysicalRect(minX: 100, minY: 100, maxX: 300, maxY: 300))
+        XCTAssertEqual(vm.wavePlacements.first?.displayId, "A",
+                       "発火時に隣接物理レイアウトのスナップショットが wavePlacements に固定される")
+
+        // radiusMM は progress=p*(maxDistanceMM+bandMM) で単調増加する (WaveGeometry.radiusMM)。
+        // @Published の全遷移を記録して非減少性を確認する (壁時計固定サンプリングは CI 共有 runner の
+        // Timer 遅延で破綻した実績があるため禁則、ファイル冒頭 waitUntil コメント参照)。
+        var observedRadii: [Double] = []
+        let sub = vm.$wave.sink { presentation in
+            if let r = presentation?.radiusMM { observedRadii.append(r) }
+        }
+        defer { sub.cancel() }
+
+        XCTAssertTrue(waitUntil { vm.wave == nil }, "waveDuration 経過後に消滅する")
+        XCTAssertGreaterThanOrEqual(observedRadii.count, 2, "複数回の tick で radiusMM が記録されている")
+        for i in 1..<observedRadii.count {
+            XCTAssertGreaterThanOrEqual(observedRadii[i], observedRadii[i - 1], "radiusMM は単調増加(非減少)")
+        }
+    }
+
+    /// 同じ displayId でも state.focusFlash.generation が進めば、進行中の波が古いタイマーごと
+    /// 破棄され、新しい windowFrame を震源とする波に置き換わる (focusFlash 側の再発火と対称の輪郭、
+    /// DR-0011 決定 4 のウィンドウ単位フォーカス観測が連続発火しても震源が正しく更新されることの固定)。
+    func testWaveRefiresWithNewEpicenterOnGenerationIncrement() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.waveDuration = 2.0  // 減衰完了前に再発火させる
+
+        let frame1 = LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100)
+        var s1 = makeState(mouse: nil)
+        s1.focusFlash = FocusFlashState(displayId: "A", windowFrame: frame1, generation: 1)
+        vm.apply(state: s1)
+        XCTAssertEqual(vm.wave?.epicenterMM, PhysicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100))
+
+        XCTAssertTrue(waitUntil { (vm.wave?.radiusMM ?? 0) > 0 }, "前提: 1 回目の波が進行中 (radiusMM > 0)")
+
+        let frame2 = LogicalRect(minX: 500, minY: 500, maxX: 700, maxY: 700)
+        var s2 = makeState(mouse: nil)
+        s2.focusFlash = FocusFlashState(displayId: "A", windowFrame: frame2, generation: 2)
+        vm.apply(state: s2)
+
+        XCTAssertNotNil(vm.wave, "再発火で復活")
+        XCTAssertEqual(vm.wave?.epicenterMM, PhysicalRect(minX: 500, minY: 500, maxX: 700, maxY: 700),
+                       "generation が進めば古いタイマーは破棄され、新しい震源の波に置き換わる")
+    }
+
+    /// clearFocusFlash() で focusFlash と併せて wave も即座に nil へ戻る
+    /// (DR-0011 決定 5: 波動とモニタ縁フラッシュは併存するライフサイクルなので off 遷移も対称)。
+    func testClearFocusFlashRemovesWaveImmediately() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.waveDuration = 2.0
+
+        var s1 = makeState(mouse: nil)
+        s1.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
+        vm.apply(state: s1)
+        XCTAssertNotNil(vm.wave, "前提: 波が発火している")
+
+        vm.clearFocusFlash()
+        XCTAssertNil(vm.wave, "clearFocusFlash で wave も即座に消える")
+    }
+
+    // MARK: - waveMMToLocalTransform (M-2: 描画用 transform と WavePlacement.localPx の同一性)
+
+    /// `waveMMToLocalTransform` (LaserOverlayView.waveView がインラインで組んでいた
+    /// CGAffineTransform を切り出した App 層純関数) を複数の mm 点に適用した結果が、
+    /// Core でテスト済みの `WavePlacement.localPx(fromMM:)` と一致することを固定する。
+    /// これにより「描画用 transform が Core の写像と食い違う」回帰を検出できる。
+    /// 異方 scale (scaleX ≠ scaleY) の fixture を含めることで、軸別スケールの取り違え
+    /// (例: scaleX と scaleY を逆に使う) も検出できるようにする。
+    func testWaveMMToLocalTransformMatchesWavePlacementLocalPx() {
+        // 異方 scale (縦横で mm/px 比が異なる、実機の混合 DPI を模した fixture)。
+        let placement = WavePlacement(
+            displayId: "A",
+            logicalBounds: LogicalRect(minX: 100, minY: 50, maxX: 1100, maxY: 850),
+            scaleX: 0.2, scaleY: 0.25,
+            mmRect: PhysicalRect(minX: -40, minY: 30, maxX: 160, maxY: 230))
+
+        let transform = waveMMToLocalTransform(placement)
+
+        // サンプル mm 点: mmRect.min (= local (0,0) になるはず)、mmRect 内部の任意点、
+        // mmRect 外部 (波のリングは震源より外側へ広がるため mmRect の外まで転写されうる) の 3 点。
+        let samples = [
+            PhysicalPoint(x: placement.mmRect.minX, y: placement.mmRect.minY),
+            PhysicalPoint(x: 10, y: 100),
+            PhysicalPoint(x: -100, y: 500)
+        ]
+        for mm in samples {
+            let expected = placement.localPx(fromMM: mm)
+            let actual = CGPoint(x: CGFloat(mm.x), y: CGFloat(mm.y)).applying(transform)
+            XCTAssertEqual(Double(actual.x), expected.x, accuracy: 1e-9,
+                            "mm=\(mm) の transform 結果 x が WavePlacement.localPx と一致しない")
+            XCTAssertEqual(Double(actual.y), expected.y, accuracy: 1e-9,
+                            "mm=\(mm) の transform 結果 y が WavePlacement.localPx と一致しない")
+        }
     }
 }

@@ -31,3 +31,8 @@
 ## ステータス
 
 Proposed (2026-07-10)
+
+訂正 (DR-0011, 2026-07-12): 決定 3 の「AX フレームは y-up」は実機観測で否定された
+(AX は CG y-down を返す、docs/findings/2026-07-12-ax-window-frame-y-down.md が正本)。
+決定 2 の action 形は `.focusedWindowChanged(displayId:windowFrame:)` に確定し、
+Phase B の見せ方は DR-0011 (mm 空間の波動エフェクト) が正。

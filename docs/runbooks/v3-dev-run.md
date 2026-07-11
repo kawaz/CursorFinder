@@ -171,56 +171,55 @@ fixture (実機トポロジ相当のダミー displays) を返し、action は `
 - clickCircle の減衰は AppKit 側 Timer で opacity 値を段階的に更新 (SwiftUI 暗黙 animation を回避、
   ドラッグ中の main run loop でも 60Hz coalesce と衝突せず単独で動く)
 
-## フォーカスフラッシュ (DR-0009 Phase A、issue: focus-flash-component)
+## フォーカスフラッシュ + 波動 (DR-0009 / DR-0011、issue: focus-flash-component)
 
 メニューバー `LG` → 「フォーカスフラッシュ」 でトグル。既定 off。
 
 ### on 時の挙動
 
-- `NSWorkspace.didActivateApplicationNotification` を購読 (アプリ切替検知)
-- 切替先の frontmost app から AX (`kAXFocusedWindowAttribute` → `kAXPositionAttribute` /
-  `kAXSizeAttribute`) でウィンドウ frame を取得
-- frame の中心点が包含される display id を解決 (Phase A ではウィンドウ枠の描画はせず、
-  所属モニタ id 解決にのみ frame を使用)。どの display にも含まれない場合は中心距離最小の
-  display にフォールバック (フルスクリーン中や境界跨ぎで発火が空振りしないため)
-- Core reducer が `.focusedDisplayChanged(displayId:)` を受け、`AppState.focusFlash` の
-  generation を単調増加させて上書き (同一 displayId でも generation が進めば描画層は再発火扱い)
-- 対象モニタの overlay に systemBlue の内側 24px stroke + 8px blur を描画、initial opacity=0.6 で
-  立ち上がり ~0.5s かけてフェードアウト
+- `NSWorkspace.didActivateApplicationNotification` (アプリ切替) に加え、アクティブアプリの
+  **AXObserver (`kAXFocusedWindowChangedNotification`)** を購読 — 同一アプリ内のウィンドウ /
+  ダイアログ間フォーカス移動でも発火する (DR-0011 決定 4)。アプリ切替のたびに AXObserver は
+  新しい pid へ張り直す (同一 pid への再切替は張り替えスキップ)
+- フォーカスウィンドウの frame を AX で取得 (CG y-down、identity 変換 —
+  docs/findings/2026-07-12-ax-window-frame-y-down.md)、中心点包含で display id を解決
+  (非包含時は中心距離最小へフォールバック)、`.focusedWindowChanged(displayId:windowFrame:)`
+  を dispatch
+- 描画は 2 レイヤ併存 (DR-0011 決定 5):
+  - **モニタ縁フラッシュ** (従来): 対象モニタの縁に systemBlue の内側 24px stroke + 8px blur、
+    initial opacity=0.6 → ~0.5s フェード
+  - **波動** (主役): ウィンドウ枠を震源とする角丸矩形リングが mm 空間 (隣接物理レイアウト)
+    を等方伝播し、全モニタの最遠隅到達で消える。初期値 waveDuration=0.7s / band=30mm /
+    initialOpacity=0.5 (`OverlayViewModel` の var、実機調整前提)
 
 ### off 時の挙動
 
-- NSWorkspace 通知の removeObserver
-- 減衰中のフラッシュを即座に消す (VM.clearFocusFlash)
-- `AppState.focusFlash` の値は残るが VM 側の `lastFocusFlashGeneration` が state に synchronize
-  されるので、off 中の発火は「見なかった」ものとして再 on 時にも再生されない
+- NSWorkspace 通知 removeObserver + AXObserver の RunLoop source 除去・notification 除去
+- 減衰中のフラッシュ・波動を即座に消す (VM.clearFocusFlash)
+- off 中の発火は「見なかった」扱いで再 on 時にも再生されない (lastFocusFlashGeneration の
+  synchronize)
 
-### 動作確認観点 (Cmd-Tab / 同一アプリ内ウィンドウ切替 / 別モニタ切替の 3 系列)
+### 動作確認観点
 
-1. **Cmd-Tab で対象モニタが正しく光るか** — 別モニタのアプリへ切替した時、切替後の frontmost
-   アプリのウィンドウがあるモニタの縁がハイライトされる
-2. **別モニタへの切替で対称性が保たれる** — Cmd-Tab 連打で A→B→A→B と切替した時、常に切替
-   直後のモニタだけが光り、直前まで光っていたモニタは滑らかに消える (generation カウンタ上書き
-   の視覚確認)
-3. **同一アプリ内のウィンドウ切替 (Cmd-\`) は Phase A では発火しない** — `didActivateApplication`
-   通知は「アプリ間の切替」のみ発火するため、同一アプリ内の複数ウィンドウ間切替では反応しない。
-   これは Phase A のスコープ (DR-0009 決定 5)、Phase B の kAXFocusedWindowChangedNotification
-   observer 追加待ち
-4. **連続切替の generation 挙動** — Cmd-Tab を短時間で連打しても、都度切替先モニタが光る (フェードが
-   重ならずリフレッシュされる)
-5. **複数アプリの同一モニタ内切替** — 同じモニタに複数アプリのウィンドウがある時、その内でアプリ
-   切替すると同じモニタが再び光る (「軽く再発火」の task 指示に沿う)
-6. **フェード時間 0.5s の体感** — 長すぎ / 短すぎと感じたら `OverlayViewModel.focusFlashDuration`
-   の初期値を実機確認結果で調整
-7. **フェード色・厚み・blur の体感** — 既存レーザー (赤系) と競合していないか、モニタ全体の縁として
-   自然な太さか
-8. **AX 権限なし時の degrade** — システム設定でアクセシビリティ権限を落としてから起動すると、
-   メニュー項目「フォーカスフラッシュ」が disabled (灰色) で表示され、toolTip で理由が示される
-9. **プレゼンテーションモードとの共存** — 両方 on で切替時に click 可視化と focus flash が
-   干渉しないか (別レーンで動くはずだが実機確認)
-10. **Y 座標系 (実機観測事項)** — DR-0009 決定 3 は「AX y-up」と記述しているが実装は identity 変換
-    (CG y-down 直接、`FocusFlashObserver.convertAXFrameToCGGlobal`)。実機で「フラッシュ位置が
-    ずれる (別モニタが光る)」現象が観測されたら y-flip 実装への差し替え候補
+1. **Cmd-Tab で震源ウィンドウから波が出るか** — 切替先ウィンドウの枠形リングが拡がり、
+   他モニタにも届いて消える。モニタ縁フラッシュも同時に出る
+2. **同一アプリ内のウィンドウ切替 (Cmd-\`) / ダイアログで発火するか** — AXObserver 経路の確認。
+   別モニタの同一アプリウィンドウへの切替でも波の震源が追従すること
+3. **波の方向感** — LG 側のウィンドウにフォーカスした時、内蔵側では「上から波が来る」見え方に
+   なっているか (mm 空間の隣接配置が物理配置と整合するか)
+4. **連続切替 (Cmd-Tab 連打)** — 波・フラッシュとも都度リフレッシュされ、多重描画や残留がない
+5. **AXObserver のライフサイクル** — (a) トグル off→on を 10 回程度往復 + アプリ切替を挟んでも
+   発火が重複しない (二重登録なし) (b) off 直後に発火が完全に止まる (解除漏れなし)
+   (c) 長時間 on でメモリが単調増加しない (leak 検査、厳密には Instruments Leaks で
+   FocusFlashObserver / AXObserver を確認)
+6. **AX 非対応アプリへの degrade** — AXObserverCreate が失敗するアプリに切り替えても crash せず、
+   アプリ切替経路のみで動作継続する (Console に degrade ログ)
+7. **チューニング体感** — 波の速度 (duration)・帯幅・opacity・色 (cyan) / モニタ縁との主従
+   バランス。調整は `OverlayViewModel` の wave 系 var
+8. **AX 権限なし時の degrade** — アクセシビリティ権限なしで起動するとメニュー項目が disabled
+   (灰色)、toolTip で理由表示
+9. **プレゼンテーションモードとの共存** — click 可視化と波動が干渉しないか
+
 
 ## 既知の制約 (Phase 1)
 

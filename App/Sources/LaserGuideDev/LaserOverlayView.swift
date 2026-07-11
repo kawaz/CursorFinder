@@ -55,6 +55,38 @@ struct LaserOverlayView: View {
             // 自 display と focusFlash.displayId が一致した時のみ描画、それ以外の overlay では nil
             // で非描画。opacity は VM 側 Timer で減衰済み、view は fill/stroke opacity として使う。
             focusFlashView
+
+            // フォーカス波動 (DR-0011): ウィンドウ枠を震源に mm 空間で拡がるリング。DR-0011 決定 5
+            // により上のモニタ縁フラッシュと併存する (波動が主役)。
+            waveView
+        }
+    }
+
+    /// フォーカス波動描画 (DR-0011 決定 3): 震源矩形 (mm) を radiusMM 外側へ膨張した角丸矩形の
+    /// **帯 (リング)** を mm 空間で作ってから、`waveMMToLocalTransform` (mm → 自 display 基準
+    /// view-local px、`WavePlacement.localPx` と同じ式) を適用して fill する。帯そのものを mm
+    /// 空間で `strokedPath(StrokeStyle(lineWidth: bandMM))` により生成するため、帯幅は写像後の
+    /// px 単位 stroke ではなく物理量 (mm) として厳密になる (= 混合 DPI/異方 scale でも帯幅が
+    /// 方向によって変わらない)。波は複数 display にまたがって拡がるため、自 display の
+    /// placement を `model.wavePlacements` から引いて初めて描画できる (state.displays からの
+    /// 毎 tick 再構築ではなく発火時スナップショットを使うのは OverlayViewModel.startWave の
+    /// コメント参照)。
+    @ViewBuilder
+    private var waveView: some View {
+        if let wave = model.wave,
+           let placement = model.wavePlacements.first(where: { $0.displayId == displayId }) {
+            let expandedMM = CGRect(
+                x: CGFloat(wave.epicenterMM.minX - wave.radiusMM),
+                y: CGFloat(wave.epicenterMM.minY - wave.radiusMM),
+                width: CGFloat(wave.epicenterMM.width + wave.radiusMM * 2),
+                height: CGFloat(wave.epicenterMM.height + wave.radiusMM * 2)
+            )
+            let ringMM = Path(roundedRect: expandedMM, cornerRadius: CGFloat(max(0, wave.radiusMM)))
+                .strokedPath(StrokeStyle(lineWidth: CGFloat(wave.bandMM)))
+            let localPath = ringMM.applying(waveMMToLocalTransform(placement))
+            localPath
+                .fill(Color.cyan.opacity(wave.opacity))
+                .allowsHitTesting(false)
         }
     }
 

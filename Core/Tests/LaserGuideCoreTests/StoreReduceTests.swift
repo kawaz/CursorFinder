@@ -501,59 +501,89 @@ final class StoreReduceTests: XCTestCase {
     }
 
     // ================================
-    // focusedDisplayChanged (DR-0009 Phase A)
+    // focusedWindowChanged (DR-0011)
     // ================================
     //
-    // 検証したいこと (DR-0009 決定 2 「連続切替時は世代カウンタで上書き」の輪郭):
-    //   (a) 初回発火で focusFlash が生成される (nil → セット、generation=1)
+    // 検証したいこと (DR-0009 決定 2 「連続切替時は世代カウンタで上書き」+ DR-0011 決定 4 の
+    // windowFrame 追加、の輪郭):
+    //   (a) 初回発火で focusFlash が生成される (nil → セット、generation=1、windowFrame も保存)
     //   (b) 同じ displayId への連続発火でも generation が単調増加する (= 同一モニタ内のアプリ
-    //       切替でも視覚エフェクトを再発火できる、決定 5 の Phase A 要件と対応)
+    //       切替でも視覚エフェクトを再発火できる、DR-0009 決定 5 の Phase A 要件と対応)
     //   (c) 別 displayId への切替で displayId が差し替わり generation も進む
     //   (d) effect は発生しない (フォーカスフラッシュは描画層のみの状態遷移、Store は純関数を保つ)
+    //   (e) 同一 displayId・同一 generation の流れの中でも、発火のたびに windowFrame が最新値へ
+    //       上書きされる (震源はウィンドウが動けば追従する必要があるため、DR-0011 決定 4)
 
-    /// (a) 初回発火: focusFlash が nil の状態から `.focusedDisplayChanged(A)` を投入すると、
-    ///     `FocusFlashState(displayId: "A", generation: 1)` にセットされる (generation は 1 開始)。
-    ///     effect は発生しない。
-    func testFocusedDisplayChangedInitialFiringSetsGenerationOne() {
+    private static let sampleWindowFrameA = LogicalRect(minX: 100, minY: 100, maxX: 500, maxY: 400)
+    private static let sampleWindowFrameB = LogicalRect(minX: 2000, minY: 50, maxX: 2400, maxY: 350)
+
+    /// (a) 初回発火: focusFlash が nil の状態から `.focusedWindowChanged(A, frame)` を投入すると、
+    ///     `FocusFlashState(displayId: "A", windowFrame: frame, generation: 1)` にセットされる
+    ///     (generation は 1 開始)。effect は発生しない。
+    func testFocusedWindowChangedInitialFiringSetsGenerationOne() {
         var state = AppState.initial(displays: [
             Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
         ])
         XCTAssertNil(state.focusFlash, "初期状態は未発火")
 
-        let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: "A"))
-        XCTAssertEqual(effects, [], "focusedDisplayChanged は描画専用の状態遷移で effect を出さない")
-        XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", generation: 1))
+        let (next, effects) = Store.reduce(state, .focusedWindowChanged(displayId: "A", windowFrame: Self.sampleWindowFrameA))
+        XCTAssertEqual(effects, [], "focusedWindowChanged は描画専用の状態遷移で effect を出さない")
+        XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", windowFrame: Self.sampleWindowFrameA, generation: 1))
         state = next
     }
 
     /// (b) 同一 displayId への連続発火で generation が単調増加する。
-    ///     同一モニタ内でアプリを切り替えた場合も「軽く再発火」できる仕様 (task 指示) の固定。
-    func testFocusedDisplayChangedSameDisplayIncrementsGeneration() {
+    ///     同一モニタ内でアプリを切り替えた場合も「軽く再発火」できる仕様 (DR-0009 決定 5) の固定。
+    ///     windowFrame は毎回同じ値を渡しても generation は増え続ける (発火自体が再発火トリガー)。
+    func testFocusedWindowChangedSameDisplayIncrementsGeneration() {
         var state = AppState.initial(displays: [
             Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
         ])
         for expected in UInt64(1)...UInt64(4) {
-            let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: "A"))
+            let (next, effects) = Store.reduce(state, .focusedWindowChanged(displayId: "A", windowFrame: Self.sampleWindowFrameA))
             XCTAssertEqual(effects, [])
-            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", generation: expected))
+            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: "A", windowFrame: Self.sampleWindowFrameA, generation: expected))
             state = next
         }
     }
 
     /// (c) 別 displayId への切替で displayId が差し替わり、かつ generation は前回から進む
     ///     (直前が A の generation=2 なら、B への切替は generation=3)。連続切替の識別性を担保する。
-    func testFocusedDisplayChangedCrossDisplaySwitchIncrementsGenerationAndSwapsId() {
+    ///     windowFrame も displayId と一緒に切替先の値へ差し替わる。
+    func testFocusedWindowChangedCrossDisplaySwitchIncrementsGenerationAndSwapsId() {
         var state = AppState.initial(displays: [
             Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
             Display(id: "B", logicalBounds: LogicalRect(minX: 1920, minY: 0, maxX: 3840, maxY: 1080), pose: .identity),
         ])
         // A → A → B → A の順で切り替え。generation は 1, 2, 3, 4 と単調増加。
-        let sequence: [(String, UInt64)] = [("A", 1), ("A", 2), ("B", 3), ("A", 4)]
-        for (id, expectedGen) in sequence {
-            let (next, effects) = Store.reduce(state, .focusedDisplayChanged(displayId: id))
+        let sequence: [(id: String, frame: LogicalRect, gen: UInt64)] = [
+            ("A", Self.sampleWindowFrameA, 1),
+            ("A", Self.sampleWindowFrameA, 2),
+            ("B", Self.sampleWindowFrameB, 3),
+            ("A", Self.sampleWindowFrameA, 4),
+        ]
+        for entry in sequence {
+            let (next, effects) = Store.reduce(state, .focusedWindowChanged(displayId: entry.id, windowFrame: entry.frame))
             XCTAssertEqual(effects, [])
-            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: id, generation: expectedGen))
+            XCTAssertEqual(next.focusFlash, FocusFlashState(displayId: entry.id, windowFrame: entry.frame, generation: entry.gen))
             state = next
         }
+    }
+
+    /// (e) 同一 displayId のまま windowFrame だけが変わる発火 (= ウィンドウをドラッグして
+    ///     同じモニタ内で移動させた直後に再フォーカスした想定) でも、generation は増加し
+    ///     windowFrame は最新値へ上書きされる (震源が古い位置に固定されたままにならないことの固定)。
+    func testFocusedWindowChangedUpdatesWindowFrameOnSameDisplayRefire() {
+        let state = AppState.initial(displays: [
+            Display(id: "A", logicalBounds: LogicalRect(minX: 0, minY: 0, maxX: 1920, maxY: 1080), pose: .identity),
+        ])
+        let (afterFirst, _) = Store.reduce(state, .focusedWindowChanged(displayId: "A", windowFrame: Self.sampleWindowFrameA))
+        XCTAssertEqual(afterFirst.focusFlash?.windowFrame, Self.sampleWindowFrameA)
+
+        let movedFrame = LogicalRect(minX: 300, minY: 300, maxX: 700, maxY: 600)
+        let (afterMove, effects) = Store.reduce(afterFirst, .focusedWindowChanged(displayId: "A", windowFrame: movedFrame))
+        XCTAssertEqual(effects, [])
+        XCTAssertEqual(afterMove.focusFlash, FocusFlashState(displayId: "A", windowFrame: movedFrame, generation: 2),
+                        "displayId が同じでも windowFrame は最新の発火位置へ更新される")
     }
 }

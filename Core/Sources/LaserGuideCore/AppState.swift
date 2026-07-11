@@ -60,22 +60,23 @@ public struct TapHealth: Equatable, Hashable, Sendable {
     public static let healthy = TapHealth(isWarpDisabledByPermissionLoss: false)
 }
 
-/// フォーカスフラッシュの直近発火 (DR-0009 Phase A)。
+/// フォーカスフラッシュの直近発火 (DR-0009 Phase A のモニタ縁フラッシュ + DR-0011 の波動震源)。
 ///
 /// - `displayId`: フォーカス先モニタの id。App 層は自 overlay がこの id に一致した時のみ縁を光らせる
-/// - `generation`: `.focusedDisplayChanged` を受けるたびに単調増加。連続発火 (Cmd-Tab 連打・
+/// - `windowFrame`: 震源ウィンドウの CG グローバル論理 frame (DR-0011)。波動 (WaveGeometry) は
+///   これを mm 空間へ写像した矩形を震源として拡がる
+/// - `generation`: `.focusedWindowChanged` を受けるたびに単調増加。連続発火 (Cmd-Tab 連打・
 ///   同一モニタ内のアプリ切替) を「同じ視覚エフェクトを再発火」として区別するためのカウンタ。
 ///   同じ `displayId` でも `generation` が進めば描画側は新規発火と扱う (DR-0009 「連続切替時は
 ///   世代カウンタで上書き」)。Store は純関数なので時刻を持たず、フェード進行は描画層 (VM Timer)
 ///   で管理する。
-///
-/// Phase B で `windowFrame: LogicalRect?` を追加し、ウィンドウ枠アウトラインの reducer 経路を
-/// 開ける想定 (拡張余地は Action.focusedDisplayChanged と対で開けておく)。
 public struct FocusFlashState: Equatable, Hashable, Sendable {
     public var displayId: String
+    public var windowFrame: LogicalRect
     public var generation: UInt64
-    public init(displayId: String, generation: UInt64) {
+    public init(displayId: String, windowFrame: LogicalRect, generation: UInt64) {
         self.displayId = displayId
+        self.windowFrame = windowFrame
         self.generation = generation
     }
 }

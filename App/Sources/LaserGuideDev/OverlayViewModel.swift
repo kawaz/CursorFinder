@@ -13,19 +13,13 @@
 //   表示 → (移動停止から inactivityThreshold) → laserFadeOutDuration かけてフェードアウト
 //   フェード中 → (移動再開) → 即フル輝度復帰 (デバウンス無し)
 //
-// 2026-07-10 第 2 ラウンド フィードバック #5 (描画更新のスロットル合流):
-//   tap 経由 (apply(state:)) も drag monitor 経由 (apply(mouseLocation:)) も、OS のイベント
-//   レポートレートに比例した高頻度で呼ばれうる。毎回 @Published を発火すると SwiftUI の
-//   再評価コストがイベントレートに比例して積み重なり、ドラッグ操作の体感が重くなる
-//   (kawaz 実機報告: レーザー非表示中でもドラッグが重かった → @Published の発火自体が
-//   コストの主因という仮説)。
-//
-// 2026-07-10 第 3 ラウンド (kawaz 裁定「スロットルは即値で使う一択」):
-//   リーディング+トレーリングエッジ型スロットル。前回反映から flushInterval 以上空いた入力は
-//   **即時反映** (体感遅延を足さない)。interval 内に続く入力は最新値だけを保持し、interval の
-//   残り時間で 1 回だけ trailing 反映する (中間値は捨てる、キューは作らない)。
-//   トレーリングオンリー (全入力を一律 16ms 待たせる) は静止→動き出しの初動にまで遅延を
-//   足すので採らない。
+// 描画更新のスロットル (2026-07-10 第 2-3 ラウンド、kawaz 裁定「スロットルは即値で使う一択」):
+//   tap 経由 (apply(state:)) も drag monitor 経由 (apply(mouseLocation:)) も OS のイベント
+//   レポートレートに比例した高頻度で呼ばれうる (毎回 @Published 発火だと SwiftUI 再評価コストが
+//   積み重なりドラッグが重くなる、kawaz 実機報告)。リーディング+トレーリングエッジ型スロットルで
+//   合流させる: 前回反映から flushInterval 以上空いた入力は即時反映 (体感遅延を足さない)、
+//   interval 内の入力は最新値だけを保持し残り時間で 1 回だけ trailing 反映 (中間値は捨てる)。
+//   トレーリングオンリー (全入力を一律待たせる) は静止→動き出しの初動に遅延を足すので採らない。
 import Foundation
 import AppKit
 import Combine
@@ -37,13 +31,9 @@ import LaserGuideCore
 public final class OverlayViewModel: ObservableObject {
     @Published public var state: AppState
     @Published public var currentMouseLocation: LogicalPoint?
-    /// レーザーの表示不透明度 (0 = 非表示、1 = フル表示)。
-    /// 2026-07-11 実機第 4 ラウンド: Bool の即時 on/off をやめ、opacity ベースに変更。
-    /// - 立ち上がり: 連続移動が laserShowDebounce 継続して初めて 1 になる (タッチパッドに
-    ///   触れただけの偶発的な微小移動でレーザーが出るのを防ぐ)
-    /// - 消灯: 移動停止から inactivityThreshold 後、laserFadeOutDuration かけて 0 へ減衰
-    ///   (即消しではなくスーッと消える)。減衰中に移動が再開したら即 1 に復帰する
-    ///   (= 直前まで見えていたレーザーの継続なのでデバウンスは課さない)
+    /// レーザーの表示不透明度 (0 = 非表示、1 = フル表示)。立ち上がりは連続移動が laserShowDebounce
+    /// 継続して初めて 1 になり (偶発的な微小移動で出さない)、消灯は移動停止から inactivityThreshold
+    /// 後 laserFadeOutDuration かけて 0 へ減衰する。減衰中の移動再開はデバウンス無しで即 1 に復帰。
     @Published public var laserOpacity: Double = 0
     /// プレゼンテーションモード on 時のクリック可視化。off 時 / mouseUp 後の減衰完了時は nil。
     @Published public var clickCircle: ClickCirclePresentation?
@@ -51,15 +41,17 @@ public final class OverlayViewModel: ObservableObject {
     /// state.focusFlash の generation 変化を検知して立ち上げ、focusFlashDuration にかけて減衰する。
     /// 減衰完了時 / focus flash 機能 off 時は nil。
     @Published public var focusFlash: FocusFlashPresentation?
+    /// フォーカス波動 (DR-0011 決定 5)。focusFlash と同じ generation 検知でモニタ縁と併せて立ち上がる。
+    @Published public var wave: WavePresentation?
+    /// 波動発火時点で固定した隣接物理レイアウトのスナップショット。view の mm→px 変換に使う。
+    @Published public var wavePlacements: [WavePlacement] = []
 
     /// ポインタ移動停止からレーザーの消灯 (フェード開始) までの猶予
     /// (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
     public var inactivityThreshold: TimeInterval = 0.3
 
-    /// レーザー表示開始のデバウンス: この時間以上「連続して」移動が続いて初めて表示する。
-    /// タッチパッドに触れただけの偶発的な微小移動 (継続時間 < デバウンス) では表示しない
-    /// (2026-07-11 実機第 4 ラウンドの kawaz 要望)。0.3 は起動が遅すぎた (実機裁定) ので 0.1。
-    /// テスト用に注入可能。
+    /// レーザー表示開始のデバウンス: この時間以上「連続して」移動が続いて初めて表示する
+    /// (タッチパッドに触れただけの偶発的な微小移動では表示しない、実機裁定 0.3 → 0.1)。テスト用に注入可能。
     public var laserShowDebounce: TimeInterval = 0.1
 
     /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値。
@@ -80,6 +72,11 @@ public final class OverlayViewModel: ObservableObject {
     /// 近い体感になる (実機フィードバックで再調整余地あり)。
     public var focusFlashInitialOpacity: Double = 0.6
 
+    /// 波動の進行時間 (秒) / リング帯幅 (mm) / 初期不透明度。DR-0011 決定 3 の初期値 (実機チューニング前提)。
+    public var waveDuration: TimeInterval = 0.7
+    public var waveBandMM: Double = 30
+    public var waveInitialOpacity: Double = 0.5
+
     private var inactivityWorkItem: DispatchWorkItem?
     /// 現在の連続移動の開始時刻 (systemUptime 秒)。非表示中の移動で記録を開始し、
     /// laserShowDebounce を超えて移動が継続したら表示に昇格する。移動停止で nil に戻る
@@ -88,11 +85,8 @@ public final class OverlayViewModel: ObservableObject {
     private var laserFadeTimer: Timer?
     private var pendingState: AppState?
     private var pendingMouseLocation: LogicalPoint?
-    /// 2026-07-10 レビュー指摘 major-1: `.drag` フェーズの point 更新も他の高頻度入力
-    /// (state / mouseLocation) と同じ 60Hz coalesce に合流させる。down/up は状態遷移の
-    /// レイテンシが体感に直結するため即時のまま、drag だけが event-rate @Published 発火を
-    /// 起こしていた (フィードバック#5 で確立した「@Published をイベントレートで発火させない」
-    /// 方針への違反)。
+    /// `.drag` フェーズの point 更新も他の高頻度入力 (state / mouseLocation) と同じ 60Hz coalesce
+    /// に合流させる (down/up は体感直結のため即時のまま、drag だけ event-rate 発火だった過去の違反を修正)。
     private var pendingClickDragPoint: LogicalPoint?
     /// 前回 flush の時刻 (systemUptime 秒)。リーディングエッジ判定 (前回から interval 以上
     /// 空いていれば即時反映) に使う。初期値 -∞ 相当で最初の入力は必ず即時反映になる。
@@ -103,6 +97,7 @@ public final class OverlayViewModel: ObservableObject {
     /// 直近で立ち上げた focus flash の generation。次回 apply(state:) 時に state.focusFlash?.generation
     /// と比較し、増えていれば新規発火として立ち上げ直す (同一 displayId でも再発火する)。
     private var lastFocusFlashGeneration: UInt64 = 0
+    private var waveTimer: Timer?
 
     public init(initialState: AppState, initialMouse: LogicalPoint? = nil) {
         self.state = initialState
@@ -179,6 +174,7 @@ public final class OverlayViewModel: ObservableObject {
         if let ff = state.focusFlash, ff.generation != lastFocusFlashGeneration {
             lastFocusFlashGeneration = ff.generation
             startFocusFlash(displayId: ff.displayId)
+            startWave(displays: state.displays, displayId: ff.displayId, windowFrame: ff.windowFrame)
         }
     }
 
@@ -199,15 +195,13 @@ public final class OverlayViewModel: ObservableObject {
     /// プレゼンテーションモード時のクリックイベントを適用する。
     /// - down: 現在の減衰タイマーを止めて initial opacity で表示開始 (即時)
     /// - drag: 既に表示中のサークルがあれば point だけ更新 (opacity 不変)。up 後の drag
-    ///   (= clickCircle が nil) は無視する — down を経ていないドラッグはサークル対象外。
-    ///   2026-07-10 レビュー指摘 major-1: OS のイベントレポートレートに比例した高頻度で
-    ///   飛んでくるため、down/up と違い即時代入せず 60Hz coalesce (pendingClickDragPoint +
-    ///   flush) に合流させる (フィードバック#5 の「@Published を event-rate で発火させない」
-    ///   方針との整合)。
+    ///   (= clickCircle が nil) は無視 — down を経ていないドラッグはサークル対象外。OS のイベント
+    ///   レポートレートに比例した高頻度で飛んでくるため、down/up と違い即時代入せず 60Hz coalesce
+    ///   (pendingClickDragPoint + flush) に合流させる (「@Published を event-rate で発火させない」方針)。
     /// - up: opacity を clickFadeDuration にわたって 0 まで減衰、完了で clickCircle=nil。
     ///   減衰開始位置は最後に受け取った point (= down 直後の up ならその point、drag を
-    ///   経ていれば最後の drag point) になる。coalesce 未反映の pending drag point がある
-    ///   場合は fade 開始前に同期的に反映してから読む (取りこぼし防止)
+    ///   経ていれば最後の drag point)。coalesce 未反映の pending drag point は fade 開始前に
+    ///   同期的に反映してから読む (取りこぼし防止)
     public func apply(presentationClick event: PresentationClickEvent) {
         switch event.phase {
         case .down:
@@ -297,6 +291,46 @@ public final class OverlayViewModel: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    /// フォーカス波動 (DR-0011 決定 5)。generation 変化検知で startFocusFlash と併せて立ち上がる。
+    /// `displays` から隣接物理レイアウトを構築し `wavePlacements` へ固定 (発火の瞬間のみ再計算、
+    /// view 側基準がぶれないようにするため)。震源 displayId の placement が無ければ発火しない
+    /// (state 不整合時のみ)。進行は他エフェクトと同じ 30ms 刻み Timer で progress を 0→1 に進める。
+    private func startWave(displays: [Display], displayId: String, windowFrame: LogicalRect) {
+        waveTimer?.invalidate()
+        waveTimer = nil
+        let placements = WaveLayout.placements(displays: displays)
+        wavePlacements = placements
+        guard let epicenterPlacement = placements.first(where: { $0.displayId == displayId }) else {
+            wave = nil
+            return
+        }
+        let epicenterMM = epicenterPlacement.toMM(windowFrame)
+        let maxDistanceMM = WaveGeometry.maxDistanceMM(epicenter: epicenterMM, placements: placements)
+        let (bandMM, initialOpacity) = (waveBandMM, waveInitialOpacity)
+        let step: TimeInterval = 0.03
+        let ticks = max(1, Int(waveDuration / step))
+        let deltaProgress = 1.0 / Double(ticks)
+        var progress = 0.0
+        func makePresentation() -> WavePresentation {
+            .at(progress: progress, epicenterMM: epicenterMM, maxDistanceMM: maxDistanceMM,
+                bandMM: bandMM, initialOpacity: initialOpacity)
+        }
+        wave = makePresentation()
+        let timer = Timer(timeInterval: step, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            progress += deltaProgress
+            if progress >= 1 {
+                self.wave = nil
+                t.invalidate()
+                self.waveTimer = nil
+            } else {
+                self.wave = makePresentation()
+            }
+        }
+        waveTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     /// フォーカスフラッシュ機能 off 遷移時に呼ぶ。減衰中でも即座に消し、次回の generation 変化
     /// でも state.focusFlash?.generation との差分検知が正しく行われるよう lastFocusFlashGeneration
     /// は state の値に合わせておく (off 中の発火をカウントし、再 on 時に「見なかった 1 回」を
@@ -305,6 +339,9 @@ public final class OverlayViewModel: ObservableObject {
         focusFlashFadeTimer?.invalidate()
         focusFlashFadeTimer = nil
         focusFlash = nil
+        waveTimer?.invalidate()
+        waveTimer = nil
+        wave = nil
         lastFocusFlashGeneration = state.focusFlash?.generation ?? 0
     }
 

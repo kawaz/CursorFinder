@@ -1,39 +1,30 @@
-// FocusFlashObserver (DR-0009 Phase A): NSWorkspace + AX 経路でフォーカス先モニタを解決し、
-// AppRuntime に `.focusedDisplayChanged(displayId:)` を dispatch する入力アダプタ。
+// FocusFlashObserver (DR-0011): NSWorkspace + AX 経路でフォーカス変更を購読し、
+// 所属モニタ id とフォーカスウィンドウ frame (震源) を解決して AppRuntime に
+// `.focusedWindowChanged(displayId:windowFrame:)` を dispatch する入力アダプタ。
 //
-// 経路の選定 (2026-07-10):
-//   - NSWorkspace.didActivateApplicationNotification でアプリ切替を検知
-//   - フォーカス中のウィンドウ frame は AX API (kAXFocusedWindowAttribute → kAXPositionAttribute
-//     / kAXSizeAttribute) で取得。frame は Phase A では所属モニタ id 解決にのみ使用し、
-//     ウィンドウ枠のアウトライン描画は Phase B へ持ち越し
+// 経路:
+//   - NSWorkspace.didActivateApplicationNotification でアプリ切替を検知 (プロセス粒度)
+//   - アクティブ pid に対し AXObserver で `kAXFocusedWindowChangedNotification` を購読
+//     (同一アプリ内のウィンドウ / ダイアログ切替を捕捉、DR-0011 決定 4)
+//   - フォーカス中ウィンドウ frame は AX API (kAXFocusedWindowAttribute → kAXPositionAttribute
+//     / kAXSizeAttribute) で取得
 //   - AX 権限は EventTapController と同じアクセシビリティ権限で追加要求なし
 //     (DR-0009 決定 4)。権限なし時は本アダプタを起動しない (AppDelegate 側で判定)
 //
-// AX/CGWindowList 選定理由: DR-0009 決定 2/3/4 が AX 経路を仕様レベルで前提としており、
-// Phase B (window frame outline) でも AX が必要になるため経路統一で AX を選ぶ。CGWindowList は
-// system UI (menubar/dock/screencapture) を弾く owningPID フィルタが必要になり、Phase A 単独の
-// 実装コストとしては同等以下だが Phase A→B の連続性で不利。
-//
-// 座標系の扱い (DR-0005 / DR-0009 決定 3):
-//   AX の kAXPositionAttribute は macOS 上の実測で **global screen coordinates, top-left y-down**
-//   (= CGDisplayBounds と同じ CG グローバル論理座標) を返す。CGDisplayBounds に含まれる矩形との
-//   合致で display id を解決できる (座標変換不要)。
-//   DR-0009 決定 3 は「AX y-up → CG y-down 変換を入力アダプタで行う」と書いてあるが、実機観測
-//   (Cocoa 系 AX 実装) では既に y-down なので変換不要。DR-0005 の「境界 (入力アダプタ層) で
-//   即 CG 変換」規律は満たされる (identity 変換として実装)。実機フィードバックで y 反転バグが
-//   確認された場合は本ファイルの `convertToCGGlobal` を y-flip 実装に差し替える。DR-0009 決定 3
-//   の「y-up 前提」と実機観測のズレは Phase A 実機確認後に DR 側を訂正する候補 (journal / DR-0009
-//   の追記案件)。
+// 座標系 (DR-0005):
+//   AX の kAXPositionAttribute は CG グローバル論理 (top-left y-down) を返す
+//   ことが実機観測 (2026-07-12: 14 アプリ × CGWindowList 突合で全一致) で確定。
+//   境界変換は identity として `convertAXFrameToCGGlobal` に 1 箇所集約 (DR-0005 規律)。
 //
 // 権限なし / AX 取得失敗時の degrade:
 //   - PermissionMonitor.isTrusted が false ならこの observer は AppDelegate 側で起動しない
-//   - AXUIElementCopyAttributeValue が失敗 (対象アプリが AX 非対応 / システム UI 等) した場合、
-//     Phase A では発火しない (今回のフォーカス切替を捨てる)。ユーザには menubar / Finder 等の
-//     アプリ切替が flash を伴わないケースとして観測されうる — 実機確認事項
+//   - AXObserverCreate 失敗 (AX 非対応アプリ等) は NSLog してアプリ切替のみで動作継続 (発火機会が
+//     減るだけで壊れない)。AXUIElementCopyAttributeValue 失敗も同様、そのフォーカス切替を捨てる
 //
-// トグル off 遷移時:
-//   AppDelegate が `stop()` を呼ぶ → observer 解除 + VM.clearFocusFlash() でフェード中の描画も
-//   即座に消える
+// トグル off / deinit:
+//   AppDelegate が `stop()` を呼ぶ → workspace observer 解除 + AXObserver 破棄 + RunLoop source 除去。
+//   AXObserver は self を unretained で参照する (refcon)。stop() で完全に破棄してからでないと
+//   self を解放しない契約 (deinit でも stop() を呼ぶ)。
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -44,7 +35,7 @@ import LaserGuideCore
 public struct FocusDisplayResolution: Equatable, Sendable {
     /// 解決された所属モニタ id (displays に含まれるものの中から選ばれる)
     public let displayId: String
-    /// ウィンドウの中心点 (CG 論理座標)。Phase B 拡張時にログや DR 検証で使う参考値。
+    /// ウィンドウの中心点 (CG 論理座標)。ログ / 検証用の参考値。
     public let windowCenter: LogicalPoint
     public init(displayId: String, windowCenter: LogicalPoint) {
         self.displayId = displayId
@@ -87,14 +78,35 @@ public func resolveFocusDisplay(
     return best.map { FocusDisplayResolution(displayId: $0.0.id, windowCenter: center) }
 }
 
-/// NSWorkspace 通知 + AX 経路でフォーカス変更を購読し、runtime に action を dispatch するアダプタ。
+/// window frame + displays から dispatch すべき Action を構築する純関数。
+/// 解決不能 (displays が空 / resolveFocusDisplay が nil) の場合は nil。
+/// unit test はここまでを対象とする (AX 経路は実機依存で unit test では覆えない)。
+public func focusedWindowAction(
+    windowFrame: LogicalRect, displays: [Display]
+) -> Action? {
+    guard let resolved = resolveFocusDisplay(windowFrame: windowFrame, displays: displays) else {
+        return nil
+    }
+    return .focusedWindowChanged(displayId: resolved.displayId, windowFrame: windowFrame)
+}
+
+/// NSWorkspace 通知 + AXObserver でフォーカス変更を購読し、runtime に action を dispatch するアダプタ。
 public final class FocusFlashObserver {
 
     private weak var runtime: AppRuntime?
     private var workspaceObserver: NSObjectProtocol?
 
+    // AXObserver 状態 (アクティブアプリに追従して張り替える)
+    private var axObserver: AXObserver?
+    private var axApp: AXUIElement?
+    private var axPid: pid_t?
+
     public init(runtime: AppRuntime) {
         self.runtime = runtime
+    }
+
+    deinit {
+        stop()
     }
 
     /// 購読開始。AppDelegate から AX 権限判定後に呼ぶ。
@@ -117,36 +129,83 @@ public final class FocusFlashObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
         workspaceObserver = nil
+        tearDownAXObserver()
     }
 
     // MARK: - internals
 
     private func handleAppActivation(_ app: NSRunningApplication) {
         NSLog("[LaserGuide focus] activated app=\(app.localizedName ?? "?") pid=\(app.processIdentifier)")
-        guard let runtime else { return }
-        guard let frame = focusedWindowFrame(for: app.processIdentifier) else {
-            // AX 取得失敗: このフォーカス切替は捨てる (Phase A で degrade を明示)。
-            // 2026-07-10 #3: silent-fail のままだと実機で切り分けできないため、
-            // focusedWindowFrame 内の各 guard で NSLog 済み (AXError code 込み)。
-            return
-        }
-        guard let resolved = resolveFocusDisplay(windowFrame: frame, displays: runtime.state.displays) else {
-            NSLog("[LaserGuide focus] resolveFocusDisplay returned nil (displays empty?)")
-            return
-        }
-        runtime.dispatch(.focusedDisplayChanged(displayId: resolved.displayId))
+        // アプリ単位フォーカスに追従して即発火 (アプリ切替 = 通常はウィンドウ切替を伴う)。
+        dispatchIfResolvable(pid: app.processIdentifier)
+        // 続いて同一アプリ内のウィンドウ切替を捕捉するため AXObserver を張り替える。
+        installAXObserver(pid: app.processIdentifier)
     }
 
-    /// AX でフォーカス中ウィンドウの frame を取る。Phase A ではこの frame は displayId 解決にのみ使用。
-    /// 戻り値の座標系は CG グローバル論理 (top-left y-down)。
+    /// AXObserver コールバック本体。監視中の pid に対する focused window を取り直して dispatch。
+    fileprivate func handleFocusedWindowChanged() {
+        guard let pid = axPid else { return }
+        dispatchIfResolvable(pid: pid)
+    }
+
+    private func dispatchIfResolvable(pid: pid_t) {
+        guard let runtime else { return }
+        guard let frame = focusedWindowFrame(for: pid) else {
+            // AX 取得失敗: このフォーカス切替は捨てる。focusedWindowFrame 内で NSLog 済み。
+            return
+        }
+        guard let action = focusedWindowAction(windowFrame: frame, displays: runtime.state.displays) else {
+            NSLog("[LaserGuide focus] focusedWindowAction returned nil (displays empty?)")
+            return
+        }
+        runtime.dispatch(action)
+    }
+
+    // MARK: - AXObserver 配線
+
+    private func installAXObserver(pid: pid_t) {
+        // 同一 pid への再インストールは skip (Cmd-Tab 往復のたびの張り直しを避ける)。
+        if axPid == pid, axObserver != nil { return }
+        tearDownAXObserver()
+        var observer: AXObserver?
+        let createErr = AXObserverCreate(pid, focusFlashAXObserverCallback, &observer)
+        guard createErr == .success, let obs = observer else {
+            NSLog("[LaserGuide focus] AXObserverCreate failed: pid=\(pid) axError=\(createErr.rawValue)")
+            return
+        }
+        let app = AXUIElementCreateApplication(pid)
+        let refcon = Unmanaged<FocusFlashObserver>.passUnretained(self).toOpaque()
+        let addErr = AXObserverAddNotification(obs, app, kAXFocusedWindowChangedNotification as CFString, refcon)
+        guard addErr == .success else {
+            NSLog("[LaserGuide focus] AXObserverAddNotification failed: pid=\(pid) axError=\(addErr.rawValue)")
+            return
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+        self.axObserver = obs
+        self.axApp = app
+        self.axPid = pid
+    }
+
+    private func tearDownAXObserver() {
+        if let obs = axObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+            if let app = axApp {
+                AXObserverRemoveNotification(obs, app, kAXFocusedWindowChangedNotification as CFString)
+            }
+        }
+        axObserver = nil
+        axApp = nil
+        axPid = nil
+    }
+
+    /// AX でフォーカス中ウィンドウの frame を取る。戻り値は CG グローバル論理 (top-left y-down)。
     private func focusedWindowFrame(for procId: pid_t) -> LogicalRect? {
         let axApp = AXUIElementCreateApplication(procId)
         var focused: CFTypeRef?
         let posErr = AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focused)
         guard posErr == .success, let focusedRef = focused else {
-            // 2026-07-10 #3: silent-fail 診断。対象アプリが AX 非対応 / システム UI 等で
-            // kAXFocusedWindowAttribute が取れないケースを実機の Console.app から切り分け
-            // できるよう AXError code を出力する。
+            // 対象アプリが AX 非対応 / システム UI 等で kAXFocusedWindowAttribute が取れないケースを
+            // Console.app から切り分けできるよう AXError code を出力する。
             NSLog("[LaserGuide focus] kAXFocusedWindowAttribute failed: pid=\(procId) axError=\(posErr.rawValue)")
             return nil
         }
@@ -176,23 +235,13 @@ public final class FocusFlashObserver {
         // swiftlint:disable:next force_cast
         AXValueGetValue(sizeV as! AXValue, .cgSize, &cgSize)
 
-        let frame = convertAXFrameToCGGlobal(position: cgPos, size: cgSize)
-        return frame
+        return convertAXFrameToCGGlobal(position: cgPos, size: cgSize)
     }
 
     /// AX 由来の (position, size) を CG グローバル LogicalRect (top-left y-down) に変換する境界関数。
-    ///
-    /// 実装ノート (DR-0005 / DR-0009 決定 3):
-    ///   Cocoa/AppKit ベースのアプリでは AX kAXPositionAttribute は既に CG グローバル (top-left
-    ///   y-down) を返すため identity 変換で足りる (実機観測)。DR-0009 決定 3 は「AX y-up」と
-    ///   記述しているが、これは AX が伝統的に Cocoa 座標系 (y-up) を扱うという一般論に基づく
-    ///   もので、実機挙動とは乖離している可能性が高い。Phase A の実機確認で y 反転バグが観測
-    ///   された場合は本関数を y-flip 実装に差し替え、DR-0009 決定 3 の注記を訂正する。
-    ///
-    ///   本関数を独立させておくことで、実機確認結果に応じた差し替えは 1 箇所で済む (DR-0005
-    ///   「境界変換を 1 か所に集約」規律)。
+    /// 実機観測 (2026-07-12) で AX kAXPositionAttribute は既に CG グローバル y-down を返すため
+    /// identity 変換。DR-0005 の「境界変換は 1 箇所」規律に則り関数として独立させておく。
     private func convertAXFrameToCGGlobal(position: CGPoint, size: CGSize) -> LogicalRect {
-        // identity 変換 (現時点で最も妥当な仮説):
         LogicalRect(
             minX: Double(position.x),
             minY: Double(position.y),
@@ -200,4 +249,19 @@ public final class FocusFlashObserver {
             maxY: Double(position.y + size.height)
         )
     }
+}
+
+// MARK: - AXObserver C callback
+
+/// AXObserver から呼ばれる C コールバック。refcon には passUnretained した
+/// FocusFlashObserver ポインタが入る。RunLoop source を main に張っているので main で呼ばれる。
+private func focusFlashAXObserverCallback(
+    _ observer: AXObserver,
+    _ element: AXUIElement,
+    _ notification: CFString,
+    _ refcon: UnsafeMutableRawPointer?
+) {
+    guard let refcon else { return }
+    let target = Unmanaged<FocusFlashObserver>.fromOpaque(refcon).takeUnretainedValue()
+    target.handleFocusedWindowChanged()
 }
