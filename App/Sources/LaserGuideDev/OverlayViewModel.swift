@@ -62,9 +62,9 @@ public final class OverlayViewModel: ObservableObject {
     /// テスト用に注入可能。
     public var laserShowDebounce: TimeInterval = 0.1
 
-    /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値で、
-    /// 実機フィードバックで再調整前提の初期値。テスト用に注入可能。
-    public var laserFadeOutDuration: TimeInterval = 0.4
+    /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値。
+    /// 0.4 は実機で「もう少し早くても良い」(2026-07-11 第 4 ラウンド裁定) → 0.25。テスト用に注入可能。
+    public var laserFadeOutDuration: TimeInterval = 0.25
 
     /// coalesce タイマーの周期 (60Hz = 約16.67ms)。テストで注入できるよう var にしておく。
     public var flushInterval: TimeInterval = 1.0 / 60.0

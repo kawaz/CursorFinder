@@ -60,7 +60,7 @@ swift run laserguide-dev
 - **表示デバウンス + フェードアウト** (2026-07-11 第 4 ラウンド):
   - 表示開始: 連続移動が 0.1 秒 (laserShowDebounce) 継続して初めてレーザーが出る。
     タッチパッドに触れただけの単発的な微小移動では出ない
-  - 消灯: 移動停止から 0.3 秒 (inactivityThreshold) 後、0.4 秒 (laserFadeOutDuration)
+  - 消灯: 移動停止から 0.3 秒 (inactivityThreshold) 後、0.25 秒 (laserFadeOutDuration)
     かけてスーッとフェードアウトする (即消しではない)
   - フェード中に移動を再開すると即フル輝度に復帰する (直前まで見えていたレーザーの
     継続なのでデバウンスは課さない)
