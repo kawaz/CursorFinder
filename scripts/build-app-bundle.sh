@@ -136,8 +136,9 @@ if [[ "$IDENTITY" != "-" ]]; then
   # Developer ID identity: notarize が Hardened Runtime + secure timestamp を要求する
   CODESIGN_OPTS+=(--options runtime --timestamp)
 fi
-# ad-hoc (identity="-") はローカル検証用途、Hardened Runtime を付けても意味が無いので付けない
-codesign --force --sign "$IDENTITY" "${CODESIGN_OPTS[@]}" "$APP_BUNDLE"
+# ad-hoc (identity="-") はローカル検証用途、Hardened Runtime を付けても意味が無いので付けない。
+# `${arr[@]+...}` は bash 3.2 (macOS /bin/bash) の「set -u + 空配列 = unbound variable」対策
+codesign --force --sign "$IDENTITY" ${CODESIGN_OPTS[@]+"${CODESIGN_OPTS[@]}"} "$APP_BUNDLE"
 
 # 9. 検証
 echo "[build-app-bundle] codesign --verify --deep --strict"
