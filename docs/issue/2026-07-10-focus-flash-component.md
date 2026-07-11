@@ -50,7 +50,11 @@ origin: kawaz発案
 - [x] Phase A 実装 (Core Action / reducer / Overlay 描画 / 入力アダプタ / メニュートグル)
 - [x] Phase A の unit test (Core reducer 3 ケース + App resolveFocusDisplay 4 ケース + VM 3 ケース)
 - [ ] Phase A 実機確認 (実機確認待ちリスト参照、close 前提)
-- [ ] Phase B (ウィンドウ枠のアウトライン強調 = AX frame を描画に伝搬)
+- [x] Phase B 方針裁定: DR-0011 (ウィンドウ枠震源の波動エフェクト、mm 空間・隣接物理レイアウト)
+- [x] Phase B 実装 (feature/focus-flash-wave ブランチ、AXObserver によるウィンドウ単位フォーカス観測含む)、`just ci` green
+- [ ] Phase B 実機確認 (runbook `v3-dev-run.md` の「フォーカスフラッシュ + 波動」節の観点)
+- [ ] チューニング (duration / band / opacity / 色 / 主従バランス)
+- [ ] main マージ判断
 
 ## Phase A 実装記録 (2026-07-10)
 
@@ -137,7 +141,22 @@ Phase A の unit test は Core 3 ケース + App 7 ケース (VM 3 + Observer 4)
   症状が観測されたら AX 失敗ケースとして journal に記録し、Phase B で fallback 経路
   (CGWindowList / NSWorkspace.frontmostApplication の bundleIdentifier 一致検査) を検討する
 
+## Phase B 方針裁定・実装記録 (2026-07-12)
+
+Phase A の「ウィンドウ枠のアウトライン強調」計画 (上記 TODO / 実装ノート内の Phase B 記述) は
+実機調査を経て以下の通り改訂された。旧計画の記述は経緯として残すが、正の方針は DR-0011。
+
+1. 2026-07-12、「LaserGuide でエフェクトが出ない」報告を調査した結果、Phase A のモニタ縁仕様と
+   オーダー (ウィンドウ枠) の乖離が判明
+2. kawaz 裁定により Phase B = **ウィンドウ枠震源の波動エフェクト** (mm 空間・隣接物理レイアウト)
+   に確定、DR-0011 (`docs/decisions/DR-0011-focus-wave-mm-space.md`) 起票・Accepted
+3. `feature/focus-flash-wave` ブランチで実装完了 (AXObserver によるウィンドウ単位フォーカス観測を
+   含む)。`just ci` green、実機確認待ち
+4. 残 TODO: 実機確認 (runbook `v3-dev-run.md` の「フォーカスフラッシュ + 波動」節の観点)、
+   チューニング (duration / band / opacity / 色 / 主従バランス)、main マージ判断
+
 ## 設計検討
 
 component 追加の設計判断 (責務分離・既存 2 コンポーネントとの関係・DR 起票要否) は着手時に検討する。
 → DR-0009 として起票済み (Proposed 2026-07-10)。Phase A の実装記録は本 issue の上記セクションで管理。
+Phase B の方針改訂は DR-0011 として起票済み (Accepted 2026-07-12)。
