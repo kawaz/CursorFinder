@@ -1,9 +1,6 @@
-# SwiftLint Configuration for LaserGuide (v3, SPM 構成)
+# SwiftLint Configuration for LaserGuide (SPM 構成)
 #
-# 対象は v3 の SPM 2 パッケージ (App/Sources, Core/Sources)。
-# 旧 v2 ソースツリー (LaserGuide/, LaserGuide.v1.backup/, LaserGuideTests/) は
-# DR-0010 で xcodeproj と一緒に main merge 時に削除する予定のため、それまでは
-# excluded で lint 対象から外す。
+# 対象は SPM 2 パッケージ (App/Sources, Core/Sources)。
 
 included:
   - App/Sources
@@ -14,10 +11,6 @@ excluded:
   - build
   - .git
   - .github
-  # 旧 v2 ソースツリー (main merge 時に削除、DR-0010)
-  - LaserGuide
-  - LaserGuide.v1.backup
-  - LaserGuideTests
   # scripts/ は one-shot 検証スクリプト群、リリース対象ではない
   - scripts
 

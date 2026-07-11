@@ -1,15 +1,15 @@
-# LaserGuide v3 — AI アシスタント向けガイド
+# LaserGuide — AI アシスタント向けガイド
 
 > [English](./CLAUDE.md)
 
 マルチモニタ環境の「いまどこ?」をオーバーレイ描画で可視化する macOS 常駐アプリ。
 3 コンポーネント: **レーザー** (カーソル位置) / **境界ワープ** (仮想境界でのカーソル移動制御) / **フォーカスフラッシュ** (フォーカス先モニタの明示)。
 
-## ブランチ状況 (重要)
+## ブランチ / リリースモデル (重要)
 
-- **v3 (このブランチ)**: SPM 構成の全面リライト。開発の本流
-- main: v0.12.1 配布ライン (v1 実装)。**main への push はリリース CD が発火する**ので v3 完成まで触らない
-- v2: ローカルのみの旧リライト骨格 (v3 の分岐元)。`LaserGuide/` と `LaserGuide.v1.backup/` は旧世代のソースで、main 差し替え時に整理予定 — 参照はするが変更しない
+- **main**: 唯一の長命ブランチ (SPM 全面リライト系譜)。**main への push はリリース CD が発火する**
+  (最新 tag からの auto bump + tag + GH Release + Cask 更新)。main への push = kawaz のリリース判断
+- 作業は wip/feature ブランチで行う (`just push-wip` は main を拒否)。リリース時に main へ合流
 
 ## Quick Commands
 

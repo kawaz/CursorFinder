@@ -18,8 +18,8 @@ A macOS app that displays laser-like lines from screen corners to your mouse cur
 
 ## Requirements
 
-- macOS 15.3 or later
-- Xcode 15.0 or later (for building from source)
+- macOS 13 or later
+- Swift 5.9 or later (for building from source; no Xcode project needed — pure SwiftPM)
 
 ## Installation
 
@@ -33,7 +33,7 @@ brew install --cask laserguide
 > **Note**: LaserGuide is distributed as a Homebrew Cask for easier installation and updates.
 
 
-### Build from Source (Xcode)
+### Build from Source
 
 1. Clone the repository:
 ```bash
@@ -41,46 +41,17 @@ git clone https://github.com/kawaz/LaserGuide.git
 cd LaserGuide
 ```
 
-2. Open the project in Xcode:
+2. Build and run (SwiftPM):
 ```bash
-open [LaserGuide.xcodeproj](LaserGuide.xcodeproj)
+# Dev run (メニューバー常駐、アクセシビリティ権限が必要)
+just run          # = cd App && swift run laserguide-dev
+
+# Lint + 全テスト
+just ci
+
+# 署名付き .app バンドルを build/app/ に組み立て
+just build-app
 ```
-
-3. Build and run the project (⌘+R)
-
-### Build from Source (CLI)
-
-1. Clone the repository:
-```bash
-git clone https://github.com/kawaz/LaserGuide.git
-cd LaserGuide
-```
-
-2. Build and run using Make:
-```bash
-# Build and run debug version
-make dev
-
-# Build only (debug)
-make build-debug
-
-# Build release version
-make build-release
-
-# Build release and create zip
-make build-zip
-```
-
-3. Manual build with xcodebuild:
-```bash
-# Build for Debug
-xcodebuild -scheme LaserGuide -configuration Debug build
-
-# Build for Release  
-xcodebuild -scheme LaserGuide -configuration Release build
-```
-
-Note: Current releases are built without code signing for easier distribution.
 
 ### Pre-built Binary
 

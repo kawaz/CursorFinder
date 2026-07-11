@@ -1,15 +1,14 @@
-# LaserGuide v3 — AI Assistant Guide
+# LaserGuide — AI Assistant Guide
 
 > [日本語](./CLAUDE.ja.md)
 
 macOS menu-bar app that visualizes "where am I now?" on multi-monitor setups via overlay rendering.
 Three components: **Laser** (cursor location) / **Edge Warp** (cursor movement control at virtual boundaries) / **Focus Flash** (highlights the monitor that received window focus).
 
-## Branch status (important)
+## Branch / release model (important)
 
-- **v3 (this branch)**: full rewrite on SPM. The active line of development
-- main: v0.12.1 distribution line (v1 implementation). **Pushing to main triggers the release CD** — do not touch until v3 replaces it
-- v2: local-only previous rewrite skeleton (v3 branched from it). `LaserGuide/` and `LaserGuide.v1.backup/` are previous-generation sources kept for reference — read them, never modify
+- **main**: the only long-lived branch (SPM full-rewrite lineage). **Pushing to main triggers the release CD** (auto version bump from the latest tag + tag + GH Release + Cask update) — pushes to main are kawaz's release call
+- Work happens on wip/feature branches (`just push-wip` rejects main); merge to main when releasing
 
 ## Quick Commands
 
