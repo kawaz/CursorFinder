@@ -58,8 +58,9 @@ public final class OverlayViewModel: ObservableObject {
 
     /// レーザー表示開始のデバウンス: この時間以上「連続して」移動が続いて初めて表示する。
     /// タッチパッドに触れただけの偶発的な微小移動 (継続時間 < デバウンス) では表示しない
-    /// (2026-07-11 実機第 4 ラウンドの kawaz 要望)。テスト用に注入可能。
-    public var laserShowDebounce: TimeInterval = 0.3
+    /// (2026-07-11 実機第 4 ラウンドの kawaz 要望)。0.3 は起動が遅すぎた (実機裁定) ので 0.1。
+    /// テスト用に注入可能。
+    public var laserShowDebounce: TimeInterval = 0.1
 
     /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値で、
     /// 実機フィードバックで再調整前提の初期値。テスト用に注入可能。
