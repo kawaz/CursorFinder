@@ -277,7 +277,16 @@ bundle ID が同一のため、**既存の LaserGuide エントリが残って�
 3. **アプリを再起動** (権限判定は起動時 + メニュー開時)
 
 `just build-app` で .app を作り直すたびに (署名が変わるので) この手順の再実施が必要。
-実 identity 署名 (Developer ID) は署名が安定するため、この問題はリリース版では起きない。
+
+#### 恒久解: ローカルビルドも実 identity で署名する (推奨)
+
+実 identity 署名は designated requirement が証明書ベースで安定するため、リビルドしても
+TCC が同一アプリとして扱い、権限の再付与が不要になる (notarization は Gatekeeper 用で
+TCC には無関係)。リポ親ディレクトリ (バージョン管理外) の `.envrc` に
+`APPLE_SIGNING_IDENTITY` を export しておくと、`scripts/build-app-bundle.sh` が既定
+identity として拾い、以後の `just build-app` は常に署名ビルドになる。identity 名は
+`security find-identity -v -p codesigning` で確認。切替直後の 1 回だけは従来どおり
+− → + → 再起動 の再付与が必要。
 
 ### 実 identity 署名の CI 経路 (参考、CI/kawaz 実機のみ)
 
