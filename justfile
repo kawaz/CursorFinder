@@ -62,6 +62,9 @@ push-wip: ensure-clean ci
     fi
     git push -u origin "$branch"
 
-# main への push 経路は v3 が main を差し替える時に整備する
-push:
-    @echo "リリース経路は未整備 (v3 開発中は 'just push-wip' を使う)"; exit 1
+# main へのリリース push (ci + clean ゲート)。main push はリリース CD が発火する
+# (最新 tag からの auto bump + tag + GH Release + Cask 更新) = 実行はリリース判断そのもの
+[script]
+push: ensure-clean ci
+    git push origin HEAD:main
+    echo "[push] main へ push しました。CD (cd-auto-release-and-deploy.yml) の watch を推奨"
