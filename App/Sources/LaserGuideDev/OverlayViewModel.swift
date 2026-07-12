@@ -72,8 +72,9 @@ public final class OverlayViewModel: ObservableObject {
     /// 近い体感になる (実機フィードバックで再調整余地あり)。
     public var focusFlashInitialOpacity: Double = 0.6
 
-    /// 波動の進行時間 (秒) / リング帯幅 (mm) / 初期不透明度。DR-0011 決定 3 の初期値 (実機チューニング前提)。
-    public var waveDuration: TimeInterval = 0.7
+    /// 波動の進行時間 (秒) / リング帯幅 (mm) / 初期不透明度。DR-0011 決定 3 起点の実機チューニング値
+    /// (第 5 ラウンド: 0.7s は「遅くてウザい」裁定 → 0.35s へ)。
+    public var waveDuration: TimeInterval = 0.35
     public var waveBandMM: Double = 30
     public var waveInitialOpacity: Double = 0.5
 

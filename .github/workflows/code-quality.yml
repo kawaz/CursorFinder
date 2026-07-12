@@ -6,13 +6,16 @@ name: Code Quality
 # (Phase 1 の main merge 時点では過剰、まずは lint + build + test の基本 gate を回す)。
 
 on:
+  # 全ブランチの push で発火 (feature ブランチ単独 push でも CI が回るように、2026-07-13 裁定)。
+  # pull_request は fork からの PR 用に残し、同一リポ PR での push との二重実行は job の if で抑止。
   push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
 
 jobs:
   code-quality:
+    # push と pull_request の二重実行抑止: 同一リポからの PR は push 側だけで検証する
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-latest
 
     steps:
