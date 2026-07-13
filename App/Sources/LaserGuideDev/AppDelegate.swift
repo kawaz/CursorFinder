@@ -18,6 +18,7 @@
 //      overlay を作り直す
 //   5. status item に Quit のみを載せる (Phase 1)
 import AppKit
+import Combine
 import Foundation
 import LaserGuideCore
 
@@ -43,22 +44,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private var presentationToggleItem: NSMenuItem?
     private var focusFlashToggleItem: NSMenuItem?
     private var latencyInfoItem: NSMenuItem?
-    private var warpEnabled: Bool = true
-    /// プレゼンテーションモード (issue 2026-07-10-presentation-mode-capture-toggle):
-    /// on のとき overlay window の sharingType を .readOnly にしてキャプチャに映るようにし、
-    /// NSEvent global monitor で mouseDown/Up を購読してクリック可視化サークルを描画する。
-    private var presentationModeEnabled: Bool = false
     /// プレゼンテーションモード on 時のみ有効な mouseDown/Up 監視 (VM への Action 配送用)。
     private var presentationClickMonitor: Any?
-    /// フォーカスフラッシュ (DR-0009 Phase A) のトグル。Phase A は新規機能で実機フィードバック待ち
-    /// なので既定 off (保守側)。既存 warpEnabled=true と対称にせず、presentationModeEnabled=false と
-    /// 同じ「オプトイン」の流儀にする。
-    private var focusFlashEnabled: Bool = false
     /// on の間だけ生きるフォーカス変更購読 (AX + NSWorkspace)。off 時 / 権限失効時は nil。
     private var focusFlashObserver: FocusFlashObserver?
 
-    /// DR-0008: WKWebView キャリブレーション UI。メニューから開いたときに生成、閉じたら再生成。
-    private var calibration: CalibrationWindowController?
+    /// DR-0012: 表示チューニング + 機能トグルの単一情報源。UserDefaults から起動時にロード、
+    /// 変更のたびに全 OverlayViewModel と機能配線に live apply する。
+    private let settingsStore = SettingsStore()
+    /// $settings 購読ハンドル (deinit / applicationWillTerminate まで生きる)。
+    private var settingsCancellable: AnyCancellable?
+    /// 直前に適用した settings (差分検知用 — トグルの副作用を毎回叩かないため)。
+    private var lastAppliedSettings: DisplaySettings?
+
+    /// DR-0012: 設定ウィンドウ (SwiftUI TabView)。キャリブレーションもタブの 1 つとして embed。
+    private var settingsWindow: SettingsWindowController?
+
+    // 機能トグルは settingsStore.settings のミラー。既存コード互換のため計算プロパティで公開。
+    private var warpEnabled: Bool { settingsStore.settings.warpEnabled }
+    private var presentationModeEnabled: Bool { settingsStore.settings.presentationModeEnabled }
+    private var focusFlashEnabled: Bool { settingsStore.settings.focusFlashEnabled }
 
     // MARK: - NSApplicationDelegate
 
@@ -105,26 +110,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         runtime.setInterpreter(self)
         runtime.stateDidChange = { [weak self] state in
             self?.dispatchStateToOverlays(state)
-            // DR-0008: キャリブレーション UI を開いているときは RenderModel を追加で push。
-            // CalibrationWindowController 側で 60Hz coalesce するので毎 action で呼んで良い。
-            self?.calibration?.apply(state: state)
+            // DR-0012: 設定ウィンドウのキャリブレーションタブが開いているときは RenderModel を
+            // 追加で push (bridge 側で 60Hz coalesce)。閉じているときは no-op。
+            self?.settingsWindow?.applyCalibrationState(state)
         }
 
         setupOverlays(for: scan)
         setupStatusItem()
+        // DR-0012: SettingsStore の live apply を購読。@Published の `projected publisher` は
+        // sink 登録時に必ず現在値を replay するため (Combine 仕様)、明示的な初回 applySettings 呼び出しは
+        // 不要 (レビュー m-6 の修正 — 旧コメントの「念のため」は誤解。二重適用を避け、sink に一任する)。
+        settingsCancellable = settingsStore.$settings.sink { [weak self] settings in
+            self?.applySettings(settings)
+        }
 
         // 権限判定 → tap or fallback。DR-0004: 権限なしはワープのみ停止、レーザー描画は継続。
+        //
+        // C-2 / m-1: 永続化された warp OFF を尊重する — 起動時 `settings.warpEnabled == false` なら
+        // `ctrl.start()` はスキップし、self.tap への保持だけ行う。以降のトグル ON 遷移は
+        // applySettings 経由の setWarpEnabled(true) で ctrl.start() が呼ばれる (差分検知は
+        // applySettingsCore が担うので、tap ライフサイクルの判断は一箇所に集約される)。drag position
+        // monitor も warp OFF 時は起動しない (warp OFF 時は tap 経由の位置更新が無い前提の既存挙動と整合)。
         if PermissionMonitor.isTrusted(prompt: true) {
             let ctrl = EventTapController(runtime: runtime)
-            if !ctrl.start() {
-                // tapCreate が失敗した場合は fallback へ倒す (実行中に権限が剥がれるケースの雛形)
-                startLaserOnlyFallback()
-            } else {
-                self.tap = ctrl
-                // #5: tap から除外したドラッグ系イベントでも overlay がカーソルを追えるよう、
-                //   位置更新だけを別経路 (NSEvent global monitor) で拾う。warp は発火しない。
-                startDragPositionMonitor()
+            self.tap = ctrl
+            if settingsStore.settings.warpEnabled {
+                if !ctrl.start() {
+                    // tapCreate が失敗した場合は fallback へ倒す (実行中に権限が剥がれるケースの雛形)
+                    self.tap = nil
+                    startLaserOnlyFallback()
+                } else {
+                    // #5: tap から除外したドラッグ系イベントでも overlay がカーソルを追えるよう、
+                    //   位置更新だけを別経路 (NSEvent global monitor) で拾う。warp は発火しない。
+                    startDragPositionMonitor()
+                }
             }
+            // warp OFF 起動時: tap 生成のみ、start しない。以降 applySettings が warp ON 遷移を
+            // 検知した時点で ctrl.start() が呼ばれる (setWarpEnabled 副作用)。
         } else {
             startLaserOnlyFallback()
         }
@@ -257,8 +279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     private func rebuildOverlays(for scan: DisplayScanResult) {
         // 既存 window を閉じて作り直す (Phase 1、削減余地あり)
         setupOverlays(for: scan)
-        // 新規 overlay にプレゼンテーションモード設定を再適用 (sharingType + click monitor)
-        applyPresentationMode()
+        // M-1: 新規 VM は defaults 初期値のままなので、SettingsStore の表示チューニング (色 / 太さ /
+        // タイミング / 波動パラメータ) と機能副作用 (プレゼンテーションモード) を再適用する。
+        // 旧実装は applyPresentationMode() のみで、色や太さのカスタムが rebuild でデフォルトに巻き戻る
+        // バグがあった。
+        let settings = settingsStore.settings
+        for (_, vm) in overlayModelById {
+            settings.applyDisplayParameters(to: vm)
+        }
+        applyPresentationMode(settings)
     }
 
     private func dispatchStateToOverlays(_ state: AppState) {
@@ -277,14 +306,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
     /// 権限が後から付与されていれば applicationDidFinishLaunching の権限あり分岐と同じ配線
     /// (tap 生成 → laser-only fallback 停止 → drag position monitor 起動) をその場で行う。
     /// 既に tap があるか、まだ権限が無ければ何もしない (冪等)。
+    ///
+    /// m-1: warp OFF 時は tap の生成 (self.tap 保持) までは行うが `ctrl.start()` はスキップする —
+    /// 起動時分岐と同じ判断軸 (C-2)。以降のトグル ON で applySettings の setWarpEnabled(true) が
+    /// ctrl.start() を呼ぶ経路に合流する。
     private func ensureTapIfTrusted() {
         guard tap == nil else { return }
         guard PermissionMonitor.isTrusted(prompt: false) else { return }
         let ctrl = EventTapController(runtime: runtime)
-        guard ctrl.start() else { return }
         tap = ctrl
         permission.stopLaserOnly()
-        startDragPositionMonitor()
+        if settingsStore.settings.warpEnabled {
+            if !ctrl.start() {
+                tap = nil
+                return
+            }
+            startDragPositionMonitor()
+        }
     }
 
     // MARK: - Status bar
@@ -326,7 +364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         menu.addItem(focusFlashToggle)
         self.focusFlashToggleItem = focusFlashToggle
         menu.addItem(.separator())
-        // DR-0008: キャリブレーション画面を開く
+        // DR-0012: 設定ウィンドウ (⌘,)。SettingsStore と機能トグル + 表示チューニングを触れる。
+        let settingsItem = NSMenuItem(title: "設定...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        // DR-0008: キャリブレーション画面を開く (設定ウィンドウのキャリブレーションタブを開くショートカット)。
         let calibItem = NSMenuItem(title: "キャリブレーション...", action: #selector(openCalibration), keyEquivalent: "k")
         calibItem.target = self
         menu.addItem(calibItem)
@@ -347,32 +389,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         self.statusItem = item
     }
 
+    /// DR-0012: メニューからのトグルは SettingsStore に書き戻し、購読ハンドラ (applySettings)
+    /// 経由で機能配線 + メニュー state 更新を一元化する。旧実装のようにここで sender.state を
+    /// 直接触ると、設定ウィンドウ側の Toggle と食い違う (双方向同期の主線を SettingsStore に置く)。
     @objc private func toggleWarp(_ sender: NSMenuItem) {
-        warpEnabled.toggle()
-        sender.state = warpEnabled ? .on : .off
-        if warpEnabled {
-            _ = tap?.start()
-        } else {
-            tap?.stop()
-        }
+        settingsStore.settings.warpEnabled.toggle()
     }
 
     @objc private func togglePresentationMode(_ sender: NSMenuItem) {
-        presentationModeEnabled.toggle()
-        sender.state = presentationModeEnabled ? .on : .off
-        applyPresentationMode()
+        settingsStore.settings.presentationModeEnabled.toggle()
     }
 
     @objc private func toggleFocusFlash(_ sender: NSMenuItem) {
-        focusFlashEnabled.toggle()
-        sender.state = focusFlashEnabled ? .on : .off
-        applyFocusFlash()
+        settingsStore.settings.focusFlashEnabled.toggle()
     }
 
-    /// focusFlashEnabled の値を反映する: observer 起動/停止 + 減衰中の描画クリア。
-    /// AppDelegate 全体では presentationMode と同じ流儀 (apply* 関数に集約) を守る。
-    private func applyFocusFlash() {
-        if focusFlashEnabled {
+    /// DR-0012: 「設定...」メニュー項目からの遷移。単一インスタンスの settings window を前面化。
+    @objc private func openSettings() {
+        openSettingsWindow(initialTab: .general)
+    }
+
+    private func openSettingsWindow(initialTab: SettingsTab) {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(store: settingsStore, runtime: runtime)
+        }
+        settingsWindow?.show(initialTab: initialTab)
+    }
+
+    /// DR-0012 live apply: SettingsStore 変化を受けて全 VM の該当 var + 機能配線に反映する。
+    /// 差分検知と副作用は `applySettingsCore` にテスト可能な形で切り出しており (レビュー m-5)、
+    /// AppDelegate はここで実副作用 (tap / observer / menu / VM) を注入する薄い adapter に留まる。
+    private func applySettings(_ settings: DisplaySettings) {
+        let previous = lastAppliedSettings
+        lastAppliedSettings = settings
+        applySettingsCore(previous: previous, current: settings, effects: makeSideEffects())
+    }
+
+    /// AppDelegate の実副作用を SettingsSideEffects にパッケージ化して返す。テストからは
+    /// `applySettingsCore` を直接呼び、mock effects を渡して分岐 (C-1 の新値受け取り / C-2 の
+    /// 初回適用 / M-1 の rebuild 再適用のトリガ) を検証する。
+    private func makeSideEffects() -> SettingsSideEffects {
+        SettingsSideEffects(
+            setWarpEnabled: { [weak self] enabled in
+                guard let self else { return }
+                if enabled {
+                    // 権限あり + tap 保持済み前提。tap 未生成 (権限なし) 時は fallback が担うので no-op。
+                    _ = self.tap?.start()
+                    self.startDragPositionMonitor()
+                } else {
+                    self.tap?.stop()
+                    self.stopDragPositionMonitor()
+                }
+            },
+            applyPresentationMode: { [weak self] settings in
+                self?.applyPresentationMode(settings)
+            },
+            applyFocusFlash: { [weak self] settings in
+                self?.applyFocusFlash(settings)
+            },
+            updateMenuStates: { [weak self] settings in
+                self?.warpToggleItem?.state = settings.warpEnabled ? .on : .off
+                self?.presentationToggleItem?.state = settings.presentationModeEnabled ? .on : .off
+                self?.focusFlashToggleItem?.state = settings.focusFlashEnabled ? .on : .off
+            },
+            applyDisplayParametersToAllViewModels: { [weak self] settings in
+                guard let self else { return }
+                for (_, vm) in self.overlayModelById {
+                    settings.applyDisplayParameters(to: vm)
+                }
+            })
+    }
+
+    /// focusFlashEnabled (引数の `settings` から読む、C-1 対応) を反映する: observer 起動/停止 +
+    /// 減衰中の描画クリア。**旧実装は computed mirror (`self.focusFlashEnabled`) を読んでいた**が、
+    /// Combine の @Published は willSet で sink に emit するため sink 内から computed を読むと
+    /// 旧値を返し、トグルが 1 周遅れになる (C-1 の根本原因)。settings を引数で明示的に受け取ることで
+    /// stale read を構造的に排除する。
+    private func applyFocusFlash(_ settings: DisplaySettings) {
+        if settings.focusFlashEnabled {
             // 権限有無に関わらず起動を試みる (menu で権限なし時は disabled になっているが、
             // 実行中の権限剥奪等の遷移で通ってしまうケースに備える)。
             guard focusFlashObserver == nil else { return }
@@ -386,15 +480,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         }
     }
 
-    /// presentationModeEnabled の値を全 overlay に反映する: sharingType 切替 + click 監視の
-    /// 起動/停止。overlay の再構築 (rebuildOverlays) からも呼ぶことで、新規モニタでも設定が
-    /// 継続する。
-    private func applyPresentationMode() {
-        let type: NSWindow.SharingType = presentationModeEnabled ? .readOnly : .none
+    /// presentationModeEnabled (引数の `settings` から読む、C-1 対応) を全 overlay に反映する:
+    /// sharingType 切替 + click 監視の起動/停止。overlay の再構築 (rebuildOverlays) からも呼ぶことで
+    /// 新規モニタでも設定が継続する — 呼び出し側 (rebuildOverlays / applySettingsCore) が現在の
+    /// settings を必ず渡すことで、旧 computed mirror 経路の stale read を排除。
+    private func applyPresentationMode(_ settings: DisplaySettings) {
+        let type: NSWindow.SharingType = settings.presentationModeEnabled ? .readOnly : .none
         for ctrl in overlays {
             ctrl.window.sharingType = type
         }
-        if presentationModeEnabled {
+        if settings.presentationModeEnabled {
             startPresentationClickMonitor()
         } else {
             stopPresentationClickMonitor()
@@ -458,14 +553,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// DR-0012: 独立ウィンドウは廃止し、設定ウィンドウのキャリブレーションタブへ遷移するショートカット。
     @objc private func openCalibration() {
-        if calibration == nil {
-            calibration = CalibrationWindowController(runtime: runtime)
-        }
-        calibration?.show()
-        // 初回表示時に現在の state で JS 側の boot を助ける (WebView 読み込み完了後の
-        // requestInitialRender でも同じ経路が走るが、こちらは冗長性のため)。
-        calibration?.apply(state: runtime.state)
+        openSettingsWindow(initialTab: .calibration)
     }
 
     @objc private func quit() {

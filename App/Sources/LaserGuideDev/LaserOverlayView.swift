@@ -84,8 +84,11 @@ struct LaserOverlayView: View {
             let ringMM = Path(roundedRect: expandedMM, cornerRadius: CGFloat(max(0, wave.radiusMM)))
                 .strokedPath(StrokeStyle(lineWidth: CGFloat(wave.bandMM)))
             let localPath = ringMM.applying(waveMMToLocalTransform(placement))
+            // 色は SettingsStore 経由の model.waveColor が単一情報源 (DR-0012)。alpha 成分は
+            // 設定値 * 波動 progress の opacity として掛け合わせる。
+            let base = model.waveColor
             localPath
-                .fill(Color.cyan.opacity(wave.opacity))
+                .fill(Color(.sRGB, red: base.r, green: base.g, blue: base.b, opacity: base.a * wave.opacity))
                 .allowsHitTesting(false)
         }
     }
@@ -103,9 +106,12 @@ struct LaserOverlayView: View {
             let width = selfDisplay.logicalBounds.maxX - selfDisplay.logicalBounds.minX
             let height = selfDisplay.logicalBounds.maxY - selfDisplay.logicalBounds.minY
             let strokeThickness: CGFloat = 24
+            // 色は SettingsStore 経由 (DR-0012)。alpha は color.a * flash.opacity の乗算。
+            let ff = model.focusFlashColor
+            let strokeColor = Color(.sRGB, red: ff.r, green: ff.g, blue: ff.b, opacity: ff.a * flash.opacity)
             Rectangle()
                 .inset(by: strokeThickness / 2)
-                .stroke(Color.blue.opacity(flash.opacity), lineWidth: strokeThickness)
+                .stroke(strokeColor, lineWidth: strokeThickness)
                 .blur(radius: 8)
                 .frame(width: width, height: height)
                 .position(x: width / 2, y: height / 2)
@@ -157,8 +163,10 @@ struct LaserOverlayView: View {
 
         let n = delta / dist
         let perp = SIMD2<Float>(-n.y, n.x)
-        let cornerHalfWidth = Float(LaserGeometry.defaultCornerHalfWidth)
-        let tipHalfWidth = Float(LaserGeometry.defaultTipHalfWidth)
+        // DR-0012: 太さは SettingsStore 経由の model 値が単一情報源。LaserGeometry の default
+        // 定数は SettingsStore の初期値としてのみ参照する (実描画には使わない)。
+        let cornerHalfWidth = Float(model.laserCornerHalfWidth)
+        let tipHalfWidth = Float(model.laserTipHalfWidth)
 
         let c1 = s + perp * cornerHalfWidth
         let c2 = s - perp * cornerHalfWidth
@@ -172,10 +180,15 @@ struct LaserOverlayView: View {
             path.addLine(to: CGPoint(x: CGFloat(c2.x), y: CGFloat(c2.y)))
             path.closeSubpath()
         }
+        // DR-0012: グラデーション 3 stop は SettingsStore 経由の model 値が単一情報源。
+        // location (0.0 / 0.35 / 1.0) は現状固定 (色 stop の追加は Phase 2 検討)。
+        func gradientColor(_ c: RGBAColor) -> Color {
+            Color(.sRGB, red: c.r, green: c.g, blue: c.b, opacity: c.a)
+        }
         let gradient = Gradient(stops: [
-            .init(color: Color.red.opacity(0.85), location: 0.0),
-            .init(color: Color.yellow.opacity(0.65), location: 0.35),
-            .init(color: Color.white.opacity(0.35), location: 1.0)
+            .init(color: gradientColor(model.laserColorNear), location: 0.0),
+            .init(color: gradientColor(model.laserColorMid), location: 0.35),
+            .init(color: gradientColor(model.laserColorFar), location: 1.0)
         ])
         context.fill(path, with: .linearGradient(gradient, startPoint: corner, endPoint: apex))
     }

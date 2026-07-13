@@ -20,6 +20,11 @@
 //   合流させる: 前回反映から flushInterval 以上空いた入力は即時反映 (体感遅延を足さない)、
 //   interval 内の入力は最新値だけを保持し残り時間で 1 回だけ trailing 反映 (中間値は捨てる)。
 //   トレーリングオンリー (全入力を一律待たせる) は静止→動き出しの初動に遅延を足すので採らない。
+//
+// SwiftLint 抑止 (DR-0012 で色・太さ var を追加した際に file_length warning=400 を超えた):
+//   ライフサイクル (mouse → laser fade) と focus flash / wave の Timer 駆動を 1 クラスで
+//   持つ設計上の凝集は分割で失われる。プロパティは追加のみで責務は同じなので抑止。
+// swiftlint:disable file_length
 import Foundation
 import AppKit
 import Combine
@@ -46,37 +51,64 @@ public final class OverlayViewModel: ObservableObject {
     /// 波動発火時点で固定した隣接物理レイアウトのスナップショット。view の mm→px 変換に使う。
     @Published public var wavePlacements: [WavePlacement] = []
 
-    /// ポインタ移動停止からレーザーの消灯 (フェード開始) までの猶予
-    /// (v1 の Config.Timing.inactivityThreshold=0.3 と同値)。
-    public var inactivityThreshold: TimeInterval = 0.3
+    // MARK: - DR-0012 SettingsStore ミラー (単一情報源は SettingsStore)
+    //
+    // 全プロパティの初期値は `DisplaySettings.defaults.<same>` から引く (レビュー n-6 で
+    // 「タイミング var と色 var の流儀混在」を解消)。二重管理 (VM 側でも数値リテラルを持つ
+    // 過去実装) を廃し、defaults を触れば VM も自動追従する形。
+    //
+    // n-5 (extension 分割) の注記: Swift の言語制約上、stored / @Published property は class
+    // extension に切り出せない (別ファイルへ移せば型の一貫性が崩れる)。ここは MARK 区画で
+    // 意図を明示し、file_length 抑止は残す方針とする。
 
-    /// レーザー表示開始のデバウンス: この時間以上「連続して」移動が続いて初めて表示する
-    /// (タッチパッドに触れただけの偶発的な微小移動では表示しない、実機裁定 0.3 → 0.1)。テスト用に注入可能。
-    public var laserShowDebounce: TimeInterval = 0.1
+    /// ポインタ移動停止からレーザーの消灯 (フェード開始) までの猶予。
+    public var inactivityThreshold: TimeInterval = DisplaySettings.defaults.inactivityThreshold
 
-    /// レーザー消灯時のフェードアウト時間 (秒)。即消しではなくスーッと消える体感のための値。
-    /// 0.4 は実機で「もう少し早くても良い」(2026-07-11 第 4 ラウンド裁定) → 0.25。テスト用に注入可能。
-    public var laserFadeOutDuration: TimeInterval = 0.25
+    /// レーザー表示開始のデバウンス。連続移動がこの時間以上続いて初めて表示する。テスト用に注入可能。
+    public var laserShowDebounce: TimeInterval = DisplaySettings.defaults.laserShowDebounce
+
+    /// レーザー消灯時のフェードアウト時間 (秒)。テスト用に注入可能。
+    public var laserFadeOutDuration: TimeInterval = DisplaySettings.defaults.laserFadeOutDuration
 
     /// coalesce タイマーの周期 (60Hz = 約16.67ms)。テストで注入できるよう var にしておく。
+    /// これは SettingsStore の管轄外 (実装内部のスロットル周期であってユーザ調整対象ではない)。
     public var flushInterval: TimeInterval = 1.0 / 60.0
 
-    /// mouseUp 後のクリックサークル消滅時間 (秒)。テスト用に注入可能。
+    /// mouseUp 後のクリックサークル消滅時間 (秒)。プレゼンテーションモード内部のみで使われる
+    /// (SettingsStore の公開パラメータではない Phase 1 判断)。テスト用に注入可能。
     public var clickFadeDuration: TimeInterval = 0.3
-    /// mouseDown 時のサークル初期不透明度。
+    /// mouseDown 時のサークル初期不透明度。SettingsStore の公開パラメータではない。
     public var clickInitialOpacity: Double = 0.6
 
-    /// フォーカスフラッシュのフェード時間 (秒)。task 指示「~0.5s でフェードアウト」に沿う。
-    public var focusFlashDuration: TimeInterval = 0.5
-    /// フォーカスフラッシュの初期不透明度。0.6 前後にすることでシステム標準の accent 系ハイライトと
-    /// 近い体感になる (実機フィードバックで再調整余地あり)。
-    public var focusFlashInitialOpacity: Double = 0.6
+    /// フォーカスフラッシュのフェード時間 (秒)。
+    public var focusFlashDuration: TimeInterval = DisplaySettings.defaults.focusFlashDuration
+    /// フォーカスフラッシュの初期不透明度。
+    public var focusFlashInitialOpacity: Double = DisplaySettings.defaults.focusFlashInitialOpacity
 
-    /// 波動の進行時間 (秒) / リング帯幅 (mm) / 初期不透明度。DR-0011 決定 3 起点の実機チューニング値
-    /// (第 5 ラウンド: 0.7s は「遅くてウザい」裁定 → 0.35s へ)。
-    public var waveDuration: TimeInterval = 0.35
-    public var waveBandMM: Double = 30
-    public var waveInitialOpacity: Double = 0.5
+    /// 波動の進行時間 / リング帯幅 (mm) / 初期不透明度。
+    public var waveDuration: TimeInterval = DisplaySettings.defaults.waveDuration
+    public var waveBandMM: Double = DisplaySettings.defaults.waveBandMM
+    public var waveInitialOpacity: Double = DisplaySettings.defaults.waveInitialOpacity
+
+    // 色 / 太さは描画に直接効くため @Published 化する (レビュー m-2)。静止中に設定ウィンドウで色を
+    // 変更しても、次のマウス移動を待たず SwiftUI が即時再評価する。60Hz coalesce との整合: 色変更は
+    // Slider / ColorPicker 操作由来の低頻度イベントで、mouseMoved のような event-rate 発火にはならない
+    // ため、`flushInterval` に合流させず直接 objectWillChange 経路で通してよい。
+
+    /// レーザーグラデーション角側 (location 0.0)。SettingsStore.laserColorNear と対応。
+    @Published public var laserColorNear: RGBAColor = DisplaySettings.defaults.laserColorNear
+    /// レーザーグラデーション中央 (location 0.35)。SettingsStore.laserColorMid と対応。
+    @Published public var laserColorMid: RGBAColor = DisplaySettings.defaults.laserColorMid
+    /// レーザーグラデーションポインタ側 (location 1.0)。SettingsStore.laserColorFar と対応。
+    @Published public var laserColorFar: RGBAColor = DisplaySettings.defaults.laserColorFar
+    /// レーザー角側半幅 (px)。
+    @Published public var laserCornerHalfWidth: Double = DisplaySettings.defaults.laserCornerHalfWidth
+    /// レーザー頂点辺半幅 (px)。
+    @Published public var laserTipHalfWidth: Double = DisplaySettings.defaults.laserTipHalfWidth
+    /// フォーカスフラッシュ (モニタ縁) の色。alpha は focusFlashInitialOpacity と乗算して描画される。
+    @Published public var focusFlashColor: RGBAColor = DisplaySettings.defaults.focusFlashColor
+    /// フォーカス波動リングの色。alpha は wave.opacity と乗算して描画される。
+    @Published public var waveColor: RGBAColor = DisplaySettings.defaults.waveColor
 
     private var inactivityWorkItem: DispatchWorkItem?
     /// 現在の連続移動の開始時刻 (systemUptime 秒)。非表示中の移動で記録を開始し、

@@ -14,6 +14,7 @@ DR-0001 は前身の実験リポ (LaserGuideV3) 側にあり、本リポには�
 - [DR-0009-focus-flash-component](./DR-0009-focus-flash-component.md) — 第3コンポーネント「フォーカスフラッシュ」(段階実装 A=モニタ縁 → B=ウィンドウ枠) (Proposed)
 - [DR-0010-release-packaging](./DR-0010-release-packaging.md) — SPM 完結 + スクリプト .app バンドル、xcodeproj 廃止 (Proposed)
 - [DR-0011-focus-wave-mm-space](./DR-0011-focus-wave-mm-space.md) — フォーカス波動エフェクト: mm 空間 + 隣接物理レイアウト、AXObserver でウィンドウ単位観測 (Accepted)
+- [DR-0012-settings-window](./DR-0012-settings-window.md) — 設定ウィンドウ: SwiftUI TabView + SettingsStore 単一情報源、キャリブレーションをタブ統合 (Accepted)
 
 ## Archived
 
