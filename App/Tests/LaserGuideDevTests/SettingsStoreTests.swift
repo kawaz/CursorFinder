@@ -99,11 +99,15 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - デフォルト値の固定 (レビュー M-3 で色は semantic 実測近似に確定)
 
-    /// タイミング / 太さ / 機能トグルの defaults は現行実装の初期値をそのまま引き継ぐ。
+    /// タイミング / 太さ / 機能トグルの defaults は DR-0013 実機第 6 ラウンド裁定後の値をそのまま持つ。
     /// **色は semantic color (Color.red 等) の実測 sRGB 近似で固定** (DR-0012 決定 6、
     /// レビュー M-3 の裁定 — 動的な semantic color は保存経路の hex 量子化と往復一致しないため、
-    /// light/dark 適応を捨てて固定 sRGB を採用)。opacity 成分は現行のグラデ stop (0.85 / 0.65 / 0.35)
+    /// light/dark 適応を捨てて固定 sRGB を採用)。opacity 成分は現行のグラデ stop (角 0.85 / ポインタ側 0.35)
     /// と一致させることでレーザーの透け感を保つ。
+    ///
+    /// DR-0013 変更点:
+    ///   - `laserTipHalfWidth` / `laserColorMid` 廃止 (3 stop → 2 stop、頂点 1 点集約)
+    ///   - `laserStandoffPx` 新設 (px 固定値、既定 40 = 旧 v1 と同値)
     func testDefaultsMatchCurrentImplementationInitialValues() {
         let d = DisplaySettings.defaults
         // タイミング (OverlayViewModel var 初期値と同値)
@@ -115,21 +119,54 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(d.waveDuration, 0.35)
         XCTAssertEqual(d.waveBandMM, 30)
         XCTAssertEqual(d.waveInitialOpacity, 0.5)
-        // 太さ (LaserGeometry static 定数と同値)
+        // 太さ (LaserGeometry static 定数と同値) + DR-0013 の standoff px 固定
         XCTAssertEqual(d.laserCornerHalfWidth, Double(LaserGeometry.defaultCornerHalfWidth))
-        XCTAssertEqual(d.laserTipHalfWidth, Double(LaserGeometry.defaultTipHalfWidth))
+        XCTAssertEqual(d.laserStandoffPx, 40.0,
+                       "DR-0013: 消える範囲半径は px 固定 40 (旧 v1 の固定 40px を復刻)")
         // 機能トグル (旧 AppDelegate の var 初期値)
         XCTAssertEqual(d.warpEnabled, true, "境界ワープは既定で on (v1 から継続)")
         XCTAssertEqual(d.presentationModeEnabled, false, "プレゼンテーションモードは既定で off")
         XCTAssertEqual(d.focusFlashEnabled, false, "フォーカスフラッシュは既定で off (DR-0009 Phase A の保守判断)")
-        // 色 (semantic 実測近似の固定 sRGB、opacity は現行グラデ stop の 0.85 / 0.65 / 0.35)。
+        // 色 (semantic 実測近似の固定 sRGB、opacity は現行グラデ stop 0.85 / 0.35)。
         // hex は defaults 定義側と同じリテラルを再走査して不変性を固定する (= リファクタで
-        // ずれた場合にここで即検出)。
+        // ずれた場合にここで即検出)。DR-0013 で mid 廃止 (2 stop 化)。
         XCTAssertEqual(d.laserColorNear.hexString, "#FF4245D9", "Color.red 近似 + opacity 0.85 (グラデ角側)")
-        XCTAssertEqual(d.laserColorMid.hexString,  "#FFD600A6", "Color.yellow 近似 + opacity 0.65 (中央)")
         XCTAssertEqual(d.laserColorFar.hexString,  "#FFFFFF59", "Color.white + opacity 0.35 (ポインタ側)")
-        XCTAssertEqual(d.focusFlashColor.hexString, "#0091FFFF", "Color.blue 近似 + opacity 1.0 (モニタ縁)")
+        XCTAssertEqual(d.focusFlashColor.hexString, "#0091FFFF", "Color.blue 近似 + opacity 1.0 (ウィンドウ枠)")
         XCTAssertEqual(d.waveColor.hexString,       "#3CD3FEFF", "Color.cyan 近似 + opacity 1.0 (波動)")
+    }
+
+    /// DR-0013 tolerant decode: **廃止フィールド** (`laserColorMid` / `laserTipHalfWidth`) を持つ旧 JSON を
+    /// 読み込んでも、Codable の未知キー無視で自然に捨てられ、他フィールドは無事に取り込まれる。
+    /// これにより古い保存値からの migration がユーザに見えない (再保存で新スキーマに揃う)。
+    func testTolerantDecodeIgnoresRemovedFieldsFromOldJSON() throws {
+        // 旧スキーマ相当の JSON (廃止フィールドを含み、新フィールド laserStandoffPx は欠落)
+        let oldJSON = """
+        {
+            "laserColorMid": "#FFD600A6",
+            "laserTipHalfWidth": 0.5,
+            "laserShowDebounce": 0.42
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(DisplaySettings.self, from: oldJSON)
+        // 廃止フィールドは無視 (decode 側で読まないので存在しても影響なし)
+        XCTAssertEqual(decoded.laserShowDebounce, 0.42, "生きているフィールドは尊重される")
+        // 新フィールド (欠落) はデフォルトで補完
+        XCTAssertEqual(decoded.laserStandoffPx, DisplaySettings.defaults.laserStandoffPx,
+                       "新フィールドは欠落時に default (40) で補完")
+        // 他フィールドも default 補完
+        XCTAssertEqual(decoded.laserColorNear, DisplaySettings.defaults.laserColorNear)
+        XCTAssertEqual(decoded.laserColorFar, DisplaySettings.defaults.laserColorFar)
+    }
+
+    /// DR-0013 新フィールド `laserStandoffPx` を含む JSON を保存 → 読み込みで往復する。
+    /// tolerant decode の「新フィールド default 補完」パスと、通常 encode の両方を固定する。
+    func testStandoffPxRoundTripPreservesArbitraryValues() throws {
+        var settings = DisplaySettings.defaults
+        settings.laserStandoffPx = 25
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(DisplaySettings.self, from: data)
+        XCTAssertEqual(decoded.laserStandoffPx, 25, "任意値でも encode/decode 往復")
     }
 
     // MARK: - タブ単位リセット
@@ -165,7 +202,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(r.laserShowDebounce, 0.99, "Laser 側は変更なし")
     }
 
-    /// resettingFocusFlash はモニタ縁 + 波動を default に戻し、レーザー / 一般タブは保持。
+    /// resettingFocusFlash はウィンドウ枠 + 波動を default に戻し、レーザー / 一般タブは保持。
     func testResettingFocusFlashRestoresOnlyFlashAndWave() {
         var s = DisplaySettings.defaults
         s.warpEnabled = false                    // 一般 (保持)
@@ -218,9 +255,8 @@ final class SettingsStoreTests: XCTestCase {
         s.inactivityThreshold = 0.55
         s.laserFadeOutDuration = 0.11
         s.laserCornerHalfWidth = 12
-        s.laserTipHalfWidth = 3
+        s.laserStandoffPx = 25  // DR-0013: px 固定 standoff
         s.laserColorNear = RGBAColor.parseHex("#010203FF")!
-        s.laserColorMid = RGBAColor.parseHex("#040506AA")!
         s.laserColorFar = RGBAColor.parseHex("#070809BB")!
         s.focusFlashDuration = 0.9
         s.focusFlashInitialOpacity = 0.3
@@ -240,9 +276,8 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(vm.inactivityThreshold, 0.55)
         XCTAssertEqual(vm.laserFadeOutDuration, 0.11)
         XCTAssertEqual(vm.laserCornerHalfWidth, 12)
-        XCTAssertEqual(vm.laserTipHalfWidth, 3)
+        XCTAssertEqual(vm.laserStandoffPx, 25)
         XCTAssertEqual(vm.laserColorNear, s.laserColorNear)
-        XCTAssertEqual(vm.laserColorMid, s.laserColorMid)
         XCTAssertEqual(vm.laserColorFar, s.laserColorFar)
         XCTAssertEqual(vm.focusFlashDuration, 0.9)
         XCTAssertEqual(vm.focusFlashInitialOpacity, 0.3)

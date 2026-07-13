@@ -365,13 +365,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         self.focusFlashToggleItem = focusFlashToggle
         menu.addItem(.separator())
         // DR-0012: 設定ウィンドウ (⌘,)。SettingsStore と機能トグル + 表示チューニングを触れる。
+        // DR-0013 決定 5: 「キャリブレーション...」独立項目は削除 (設定ウィンドウのタブから開ける)。
         let settingsItem = NSMenuItem(title: "設定...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
-        // DR-0008: キャリブレーション画面を開く (設定ウィンドウのキャリブレーションタブを開くショートカット)。
-        let calibItem = NSMenuItem(title: "キャリブレーション...", action: #selector(openCalibration), keyEquivalent: "k")
-        calibItem.target = self
-        menu.addItem(calibItem)
         menu.addItem(.separator())
         // tap レイテンシ統計: メニューを開くたびに menuWillOpen で最新値へ更新する表示専用行。
         let latencyInfo = NSMenuItem(title: "tap レイテンシ: 計測待ち (マウスを動かして)", action: nil, keyEquivalent: "")
@@ -551,11 +548,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Effect
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    /// DR-0012: 独立ウィンドウは廃止し、設定ウィンドウのキャリブレーションタブへ遷移するショートカット。
-    @objc private func openCalibration() {
-        openSettingsWindow(initialTab: .calibration)
     }
 
     @objc private func quit() {

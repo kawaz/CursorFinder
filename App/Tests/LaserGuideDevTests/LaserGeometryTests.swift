@@ -110,46 +110,34 @@ final class LaserGeometryTests: XCTestCase {
     }
 
     // ================================================================
-    // #3 第 2 ラウンド: standoff の割合ベース化 (2026-07-10)
+    // #3 DR-0013: standoff を px 固定値で直接渡す (旧 standoffDistance/min/max/ratio は廃止)
     //
-    // 固定 40px から「角→ポインタ距離の 10% (defaultStandoffRatio)」+ min/max px クランプへ変更。
-    // taperApexPoint 自体 (standoff を受け取って頂点を戻す幾何計算) は変更しないため上のテストは
-    // そのまま有効。ここでは「standoff をどう決めるか」(LaserGeometry.standoffDistance) を検証する。
+    // taperApexPoint 自体 (standoff を受け取って頂点を戻す幾何計算) は既存契約のまま
+    // = 「ポインタから standoff だけ角側に戻した点」を返す純粋幾何関数。呼び出し側が
+    // SettingsStore.laserStandoffPx (px 固定値) を直接渡す形になる。
     // ================================================================
 
-    /// 通常域: 距離 1000px の 10% = 100px はクランプ範囲 (8...200) 内なので、そのまま採用される。
-    func testStandoffDistanceUsesRatioWhenWithinClampRange() {
-        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: 1000)
-        XCTAssertEqual(standoff, 100, accuracy: 1e-9, "1000px の 10% = 100px、min/max の間なのでそのまま")
-    }
+    /// standoff 固定 40px (DR-0013 デフォルト) を taperApexPoint に渡した時の既存契約:
+    /// corner (0,0) → target (1000, 0)、距離 1000 → apex は target から 40 手前 (960, 0)。
+    /// 「距離比率 + min/max クランプ」廃止で、遠くのレーザーでも近くのレーザーでも同じ 40px 引かれる。
+    func testTaperApexPreservesPxStandoffContractRegardlessOfDistance() {
+        // 遠距離 (1000px): 40 px 手前が頂点
+        let apexFar = LaserGeometry.taperApexPoint(from: .zero, to: CGPoint(x: 1000, y: 0), standoff: 40)
+        XCTAssertNotNil(apexFar)
+        XCTAssertEqual(apexFar!.x, 960, accuracy: 1e-9)
+        XCTAssertEqual(apexFar!.y, 0, accuracy: 1e-9)
 
-    /// 短いレーザー: 距離 30px の 10% = 3px は下限 (minStandoffDistance=8) を下回るため、8px にクランプされる。
-    /// (min クランプが無いと極端に短いレーザーで頂点が角に潰れて見た目が破綻する)
-    func testStandoffDistanceClampsToMinimumForShortLaser() {
-        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: 30)
-        XCTAssertEqual(standoff, LaserGeometry.minStandoffDistance, accuracy: 1e-9, "3px は下限 8px 未満なので min にクランプ")
-        XCTAssertEqual(standoff, 8, accuracy: 1e-9)
-    }
+        // 中距離 (100px): 同じ 40 px 手前 (旧: min クランプで 8 に潰れていた領域も固定)
+        let apexMid = LaserGeometry.taperApexPoint(from: .zero, to: CGPoint(x: 100, y: 0), standoff: 40)
+        XCTAssertNotNil(apexMid)
+        XCTAssertEqual(apexMid!.x, 60, accuracy: 1e-9)
+        XCTAssertEqual(apexMid!.y, 0, accuracy: 1e-9)
 
-    /// 長いレーザー: 距離 5000px の 10% = 500px は上限 (maxStandoffDistance=200) を超えるため、200px にクランプされる。
-    /// (max クランプが無いと極端に長いレーザーで standoff が過大になり、ポインタから離れすぎて見える)
-    func testStandoffDistanceClampsToMaximumForLongLaser() {
-        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: 5000)
-        XCTAssertEqual(standoff, LaserGeometry.maxStandoffDistance, accuracy: 1e-9, "500px は上限 200px 超なので max にクランプ")
-        XCTAssertEqual(standoff, 200, accuracy: 1e-9)
-    }
-
-    /// standoffDistance が返した値を taperApexPoint にそのまま渡すと、既存の幾何計算 (このファイル
-    /// 冒頭のテスト群) と同じ意味論で頂点が引かれることを end-to-end で固定する。
-    func testStandoffDistanceComposesWithTaperApexPoint() {
-        // corner (0,0) → target (1000, 0)、距離 1000 → standoff 100 (通常域) → apex は 90% 位置 (900,0)
-        let corner = CGPoint.zero
-        let target = CGPoint(x: 1000, y: 0)
-        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: 1000)
-        let apex = LaserGeometry.taperApexPoint(from: corner, to: target, standoff: standoff)
-        XCTAssertNotNil(apex)
-        XCTAssertEqual(apex!.x, 900, accuracy: 1e-9)
-        XCTAssertEqual(apex!.y, 0, accuracy: 1e-9)
+        // 非常に長い距離 (10000px): 旧では max=200 でクランプされていたが、DR-0013 では固定 40px を貫く
+        let apexVeryFar = LaserGeometry.taperApexPoint(from: .zero, to: CGPoint(x: 10000, y: 0), standoff: 40)
+        XCTAssertNotNil(apexVeryFar)
+        XCTAssertEqual(apexVeryFar!.x, 9960, accuracy: 1e-9)
+        XCTAssertEqual(apexVeryFar!.y, 0, accuracy: 1e-9)
     }
 
     // ================================================================

@@ -100,9 +100,8 @@ extension DisplaySettings {
         vm.inactivityThreshold = inactivityThreshold
         vm.laserFadeOutDuration = laserFadeOutDuration
         vm.laserCornerHalfWidth = laserCornerHalfWidth
-        vm.laserTipHalfWidth = laserTipHalfWidth
+        vm.laserStandoffPx = laserStandoffPx
         vm.laserColorNear = laserColorNear
-        vm.laserColorMid = laserColorMid
         vm.laserColorFar = laserColorFar
         vm.focusFlashDuration = focusFlashDuration
         vm.focusFlashInitialOpacity = focusFlashInitialOpacity

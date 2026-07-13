@@ -1,11 +1,16 @@
-// FocusFlashObserver (DR-0011): NSWorkspace + AX 経路でフォーカス変更を購読し、
+// FocusFlashObserver (DR-0011 / DR-0013): NSWorkspace + AX 経路でフォーカス変更を購読し、
 // 所属モニタ id とフォーカスウィンドウ frame (震源) を解決して AppRuntime に
 // `.focusedWindowChanged(displayId:windowFrame:)` を dispatch する入力アダプタ。
 //
 // 経路:
 //   - NSWorkspace.didActivateApplicationNotification でアプリ切替を検知 (プロセス粒度)
-//   - アクティブ pid に対し AXObserver で `kAXFocusedWindowChangedNotification` を購読
-//     (同一アプリ内のウィンドウ / ダイアログ切替を捕捉、DR-0011 決定 4)
+//   - アクティブ pid に対し AXObserver で以下 3 通知列を購読 (DR-0013 決定 2、
+//     `observedAXNotifications` の定数列で管理):
+//       * kAXFocusedWindowChangedNotification (同一アプリ内のウィンドウ切替)
+//       * kAXMainWindowChangedNotification    (main window 変更のみで focused が動かないパターン)
+//       * kAXWindowCreatedNotification        (新規ダイアログ / シート / ドキュメントウィンドウ)
+//     3 通知いずれも共通 handler (`handleFocusedWindowChanged`) に流れる。**kAXFocusedUIElementChanged
+//     は購読しない** (テキストフィールド間フォーカスで大量発火、UX ノイズが実害を上回る、DR-0013)
 //   - フォーカス中ウィンドウ frame は AX API (kAXFocusedWindowAttribute → kAXPositionAttribute
 //     / kAXSizeAttribute) で取得
 //   - AX 権限は EventTapController と同じアクセシビリティ権限で追加要求なし
@@ -93,6 +98,35 @@ public func focusedWindowAction(
 /// NSWorkspace 通知 + AXObserver でフォーカス変更を購読し、runtime に action を dispatch するアダプタ。
 public final class FocusFlashObserver {
 
+    /// installAXObserver / tearDownAXObserver で束ねて登録・解除する AX 通知の CFString 列 (DR-0013 決定 2)。
+    /// 現状の 3 通知はいずれも共通 handler (`handleFocusedWindowChanged`) に流し、同一アプリ内の
+    /// ウィンドウ / ダイアログ / 新規ウィンドウ生成でフォーカスフラッシュが発火する経路をここで一元管理する。
+    /// 新規通知を追加するときはこの列に追記するだけで install / teardown 双方が自動的に走る。
+    public static let observedAXNotifications: [CFString] = [
+        kAXFocusedWindowChangedNotification as CFString,
+        kAXMainWindowChangedNotification as CFString,
+        kAXWindowCreatedNotification as CFString
+    ]
+
+    /// `observedAXNotifications` を順に `register` へ渡す純関数 (テスト可能な形の副作用注入)。
+    /// 実行時 `installAXObserver` は `AXObserverAddNotification` を呼ぶ closure を渡し、テストは
+    /// 「呼ばれた CFString 列」を記録する mock を渡して 3 通知が定数列通りに登録されることを固定する。
+    public static func installAXNotifications(
+        notifications: [CFString] = observedAXNotifications,
+        register: (CFString) -> Void
+    ) {
+        for notif in notifications { register(notif) }
+    }
+
+    /// `observedAXNotifications` を順に `unregister` へ渡す純関数 (`installAXNotifications` と対称)。
+    /// 実行時は `AXObserverRemoveNotification` を呼び、テストは呼ばれ列を記録する。
+    public static func removeAXNotifications(
+        notifications: [CFString] = observedAXNotifications,
+        unregister: (CFString) -> Void
+    ) {
+        for notif in notifications { unregister(notif) }
+    }
+
     private weak var runtime: AppRuntime?
     private var workspaceObserver: NSObjectProtocol?
 
@@ -175,10 +209,14 @@ public final class FocusFlashObserver {
         }
         let app = AXUIElementCreateApplication(pid)
         let refcon = Unmanaged<FocusFlashObserver>.passUnretained(self).toOpaque()
-        let addErr = AXObserverAddNotification(obs, app, kAXFocusedWindowChangedNotification as CFString, refcon)
-        guard addErr == .success else {
-            NSLog("[LaserGuide focus] AXObserverAddNotification failed: pid=\(pid) axError=\(addErr.rawValue)")
-            return
+        // DR-0013: 3 通知を定数列 (`observedAXNotifications`) で一括登録。1 通知でも登録失敗した場合は
+        // NSLog に残しつつ他の通知は登録を継続する (kAXWindowCreated が古い app で unsupported の場合等、
+        // 他の通知だけでも動く方が価値がある — 全滅させない、DR-0013 の degrade 方針)。
+        Self.installAXNotifications { notif in
+            let err = AXObserverAddNotification(obs, app, notif, refcon)
+            if err != .success {
+                NSLog("[LaserGuide focus] AXObserverAddNotification failed: pid=\(pid) notif=\(notif) axError=\(err.rawValue)")
+            }
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         self.axObserver = obs
@@ -190,7 +228,9 @@ public final class FocusFlashObserver {
         if let obs = axObserver {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
             if let app = axApp {
-                AXObserverRemoveNotification(obs, app, kAXFocusedWindowChangedNotification as CFString)
+                Self.removeAXNotifications { notif in
+                    AXObserverRemoveNotification(obs, app, notif)
+                }
             }
         }
         axObserver = nil

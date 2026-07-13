@@ -46,7 +46,7 @@ public final class OverlayViewModel: ObservableObject {
     /// state.focusFlash の generation 変化を検知して立ち上げ、focusFlashDuration にかけて減衰する。
     /// 減衰完了時 / focus flash 機能 off 時は nil。
     @Published public var focusFlash: FocusFlashPresentation?
-    /// フォーカス波動 (DR-0011 決定 5)。focusFlash と同じ generation 検知でモニタ縁と併せて立ち上がる。
+    /// フォーカス波動 (DR-0011 決定 5)。focusFlash と同じ generation 検知でウィンドウ枠と併せて立ち上がる (DR-0013)。
     @Published public var wave: WavePresentation?
     /// 波動発火時点で固定した隣接物理レイアウトのスナップショット。view の mm→px 変換に使う。
     @Published public var wavePlacements: [WavePlacement] = []
@@ -97,15 +97,13 @@ public final class OverlayViewModel: ObservableObject {
 
     /// レーザーグラデーション角側 (location 0.0)。SettingsStore.laserColorNear と対応。
     @Published public var laserColorNear: RGBAColor = DisplaySettings.defaults.laserColorNear
-    /// レーザーグラデーション中央 (location 0.35)。SettingsStore.laserColorMid と対応。
-    @Published public var laserColorMid: RGBAColor = DisplaySettings.defaults.laserColorMid
     /// レーザーグラデーションポインタ側 (location 1.0)。SettingsStore.laserColorFar と対応。
     @Published public var laserColorFar: RGBAColor = DisplaySettings.defaults.laserColorFar
     /// レーザー角側半幅 (px)。
     @Published public var laserCornerHalfWidth: Double = DisplaySettings.defaults.laserCornerHalfWidth
-    /// レーザー頂点辺半幅 (px)。
-    @Published public var laserTipHalfWidth: Double = DisplaySettings.defaults.laserTipHalfWidth
-    /// フォーカスフラッシュ (モニタ縁) の色。alpha は focusFlashInitialOpacity と乗算して描画される。
+    /// ポインタ周辺の消える半径 (px)。角→ポインタ方向に target から本値だけ手前で頂点を作る (DR-0013)。
+    @Published public var laserStandoffPx: Double = DisplaySettings.defaults.laserStandoffPx
+    /// フォーカスフラッシュ (ウィンドウ枠) の色。alpha は focusFlashInitialOpacity と乗算して描画される。
     @Published public var focusFlashColor: RGBAColor = DisplaySettings.defaults.focusFlashColor
     /// フォーカス波動リングの色。alpha は wave.opacity と乗算して描画される。
     @Published public var waveColor: RGBAColor = DisplaySettings.defaults.waveColor

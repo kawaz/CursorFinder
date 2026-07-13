@@ -459,7 +459,7 @@ final class OverlayViewModelTests: XCTestCase {
     }
 
     /// clearFocusFlash() で focusFlash と併せて wave も即座に nil へ戻る
-    /// (DR-0011 決定 5: 波動とモニタ縁フラッシュは併存するライフサイクルなので off 遷移も対称)。
+    /// (DR-0011 決定 5: 波動とウィンドウ枠フラッシュは併存するライフサイクルなので off 遷移も対称)。
     func testClearFocusFlashRemovesWaveImmediately() {
         let vm = OverlayViewModel(initialState: makeState(mouse: nil))
         vm.flushInterval = 0.02

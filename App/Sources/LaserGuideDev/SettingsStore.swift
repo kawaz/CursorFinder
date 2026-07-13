@@ -123,23 +123,22 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
     // MARK: レーザー — 形状
     /// 角側の底辺半幅 (px)。既定 8.0 (`LaserGeometry.defaultCornerHalfWidth`)。
     public var laserCornerHalfWidth: Double
-    /// ポインタ手前の頂点辺半幅 (px)。既定 0.5 (`LaserGeometry.defaultTipHalfWidth`)。
-    public var laserTipHalfWidth: Double
+    /// ポインタ周辺の「レーザーが届かない」半径 (px)。角→ポインタ方向に沿って target からこの距離だけ
+    /// 手前で頂点を作る (DR-0013 決定 3、旧 defaultStandoffRatio/min/max クランプを廃止して固定 px 化)。
+    public var laserStandoffPx: Double
 
-    // MARK: レーザー — グラデーション色 (角→ポインタ側の 3 stop)
+    // MARK: レーザー — グラデーション色 (角→ポインタ側の 2 stop、DR-0013)
     /// 角側 (location=0.0) の色。既定 red opacity 0.85。
     public var laserColorNear: RGBAColor
-    /// 中央 (location=0.35) の色。既定 yellow opacity 0.65。
-    public var laserColorMid: RGBAColor
     /// ポインタ側 (location=1.0) の色。既定 white opacity 0.35。
     public var laserColorFar: RGBAColor
 
-    // MARK: フォーカスフラッシュ (モニタ縁)
-    /// モニタ縁ハイライトの持続時間。既定 0.5s。
+    // MARK: フォーカスフラッシュ (ウィンドウ枠、DR-0013)
+    /// ウィンドウ枠ハイライトの持続時間。既定 0.5s。
     public var focusFlashDuration: Double
-    /// モニタ縁ハイライトの初期不透明度 (フェード開始点)。既定 0.6。
+    /// ウィンドウ枠ハイライトの初期不透明度 (フェード開始点)。既定 0.6。
     public var focusFlashInitialOpacity: Double
-    /// モニタ縁ハイライトの色 (opacity は上の initial で乗算する形になる)。既定 systemBlue 相当。
+    /// ウィンドウ枠ハイライトの色 (opacity は上の initial で乗算する形になる)。既定 systemBlue 相当。
     public var focusFlashColor: RGBAColor
 
     // MARK: フォーカス波動 (DR-0011)
@@ -155,19 +154,21 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
     /// 全フィールドのデフォルト値。
     ///
     /// **色の裁定 (DR-0012 決定 6、レビュー M-3 由来)**: 従来描画で使っていた SwiftUI semantic
-    /// color (Color.red / Color.yellow / Color.blue / Color.cyan) は appearance 適応する動的色で、
+    /// color (Color.red / Color.white / Color.blue / Color.cyan) は appearance 適応する動的色で、
     /// hex 量子化を経る保存経路と往復一致しない。ここでは **semantic color の実測 sRGB 近似を
     /// 固定値として採用**する (light/dark 適応は失うが、ユーザが ColorPicker で自由に変更できる
-    /// ため許容)。opacity 成分は現行のグラデ stop 値 (0.85 / 0.65 / 0.35) を維持する。
+    /// ため許容)。opacity 成分は現行のグラデ stop 値 (角 0.85 / ポインタ側 0.35) を維持する。
     ///
     ///   Color.red    ≒ #FF4245  (グラデ角側、opacity 0.85 → alpha 0xD9)
-    ///   Color.yellow ≒ #FFD600  (グラデ中央、  opacity 0.65 → alpha 0xA6)
-    ///   Color.white  =  #FFFFFF  (グラデ遠側、  opacity 0.35 → alpha 0x59)
-    ///   Color.blue   ≒ #0091FF  (モニタ縁、    opacity 1.00)
+    ///   Color.white  =  #FFFFFF  (グラデポインタ側、opacity 0.35 → alpha 0x59)
+    ///   Color.blue   ≒ #0091FF  (ウィンドウ枠、opacity 1.00)
     ///   Color.cyan   ≒ #3CD3FE  (波動、        opacity 1.00)
     ///
     /// タイミング系のデフォルトも本フィールドから参照される (OverlayViewModel の対応 var 初期化子で
     /// `DisplaySettings.defaults.laserShowDebounce` を読む形。二重管理の防止、レビュー n-6)。
+    ///
+    /// **DR-0013 変更**: mid 色 / tipHalfWidth を廃止 (3 stop → 2 stop、頂点 1 点集約)、
+    /// 消える半径は `laserStandoffPx` (px 固定値、既定 40) に統一。
     ///
     /// hex リテラルは private helper `hexLiteral(_:)` を通す (= force-unwrap を隠す、8 桁固定を保証、
     /// 不正リテラルはビルド起動時に fatalError で早期検出)。
@@ -179,9 +180,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         inactivityThreshold: 0.3,
         laserFadeOutDuration: 0.25,
         laserCornerHalfWidth: 8.0,
-        laserTipHalfWidth: 0.5,
+        laserStandoffPx: 40.0,
         laserColorNear: hexLiteral("#FF4245D9"),
-        laserColorMid: hexLiteral("#FFD600A6"),
         laserColorFar: hexLiteral("#FFFFFF59"),
         focusFlashDuration: 0.5,
         focusFlashInitialOpacity: 0.6,
@@ -210,6 +210,9 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
     /// **Phase 1 は「欠落は寛容 / 型破損は全戻り」の割り切り**を採用する。実運用では JSON 破損は
     /// 手動編集以外で起きにくく、起きても ColorPicker / Slider で再調整できるコストは低い。
     /// フィールド単位 fallback が必要になる兆候 (= 破損報告) が出たら Phase 2 で書き足す。
+    ///
+    /// **DR-0013 廃止フィールド**: `laserColorMid` / `laserTipHalfWidth` は decode 側で読まない
+    /// (旧 JSON にキーが残っていても Codable の未知キー無視で自然に捨てられる)。
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Self.defaults
@@ -220,9 +223,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         self.inactivityThreshold = try c.decodeIfPresent(Double.self, forKey: .inactivityThreshold) ?? d.inactivityThreshold
         self.laserFadeOutDuration = try c.decodeIfPresent(Double.self, forKey: .laserFadeOutDuration) ?? d.laserFadeOutDuration
         self.laserCornerHalfWidth = try c.decodeIfPresent(Double.self, forKey: .laserCornerHalfWidth) ?? d.laserCornerHalfWidth
-        self.laserTipHalfWidth = try c.decodeIfPresent(Double.self, forKey: .laserTipHalfWidth) ?? d.laserTipHalfWidth
+        self.laserStandoffPx = try c.decodeIfPresent(Double.self, forKey: .laserStandoffPx) ?? d.laserStandoffPx
         self.laserColorNear = try c.decodeIfPresent(RGBAColor.self, forKey: .laserColorNear) ?? d.laserColorNear
-        self.laserColorMid = try c.decodeIfPresent(RGBAColor.self, forKey: .laserColorMid) ?? d.laserColorMid
         self.laserColorFar = try c.decodeIfPresent(RGBAColor.self, forKey: .laserColorFar) ?? d.laserColorFar
         self.focusFlashDuration = try c.decodeIfPresent(Double.self, forKey: .focusFlashDuration) ?? d.focusFlashDuration
         self.focusFlashInitialOpacity = try c.decodeIfPresent(Double.self, forKey: .focusFlashInitialOpacity) ?? d.focusFlashInitialOpacity
@@ -242,9 +244,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         inactivityThreshold: Double,
         laserFadeOutDuration: Double,
         laserCornerHalfWidth: Double,
-        laserTipHalfWidth: Double,
+        laserStandoffPx: Double,
         laserColorNear: RGBAColor,
-        laserColorMid: RGBAColor,
         laserColorFar: RGBAColor,
         focusFlashDuration: Double,
         focusFlashInitialOpacity: Double,
@@ -261,9 +262,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         self.inactivityThreshold = inactivityThreshold
         self.laserFadeOutDuration = laserFadeOutDuration
         self.laserCornerHalfWidth = laserCornerHalfWidth
-        self.laserTipHalfWidth = laserTipHalfWidth
+        self.laserStandoffPx = laserStandoffPx
         self.laserColorNear = laserColorNear
-        self.laserColorMid = laserColorMid
         self.laserColorFar = laserColorFar
         self.focusFlashDuration = focusFlashDuration
         self.focusFlashInitialOpacity = focusFlashInitialOpacity
@@ -285,21 +285,20 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         return copy
     }
 
-    /// 「レーザー」タブ (色 + 太さ + タイミング) をデフォルトに戻す。
+    /// 「レーザー」タブ (色 + 太さ + タイミング + 消える半径) をデフォルトに戻す。
     public func resettingLaser() -> DisplaySettings {
         var copy = self
         copy.laserShowDebounce = Self.defaults.laserShowDebounce
         copy.inactivityThreshold = Self.defaults.inactivityThreshold
         copy.laserFadeOutDuration = Self.defaults.laserFadeOutDuration
         copy.laserCornerHalfWidth = Self.defaults.laserCornerHalfWidth
-        copy.laserTipHalfWidth = Self.defaults.laserTipHalfWidth
+        copy.laserStandoffPx = Self.defaults.laserStandoffPx
         copy.laserColorNear = Self.defaults.laserColorNear
-        copy.laserColorMid = Self.defaults.laserColorMid
         copy.laserColorFar = Self.defaults.laserColorFar
         return copy
     }
 
-    /// 「フォーカスフラッシュ」タブ (モニタ縁 + 波動) をデフォルトに戻す。
+    /// 「フォーカスフラッシュ」タブ (ウィンドウ枠 + 波動) をデフォルトに戻す。
     public func resettingFocusFlash() -> DisplaySettings {
         var copy = self
         copy.focusFlashDuration = Self.defaults.focusFlashDuration

@@ -93,28 +93,35 @@ struct LaserOverlayView: View {
         }
     }
 
-    /// フォーカスフラッシュ描画 (DR-0009 Phase A): 対象モニタの内側に向けたブルー系グローで縁を強調。
-    /// 厚み・色の根拠は clickCircle と同様の実機フィードバックで再調整前提の初期値:
-    /// - 色: `systemBlue` (macOS のアクセント色に近く、システムのフォーカス強調と親和性が高い)
-    /// - 厚み: 内側 24px の枠 + 8px blur。ウィンドウ枠ハイライト (Phase B) と重なった時にも
-    ///   モニタ縁の方が薄く広く光る差別化ができる
-    /// - フェード: VM 側 focusFlashDuration=0.5s (task 指示 ~0.5s に沿う)
+    /// フォーカスフラッシュ描画 (DR-0013): 震源ウィンドウ枠 (`state.focusFlash.windowFrame`) を
+    /// 自 display と交差する部分だけアウトライン描画する (旧「モニタ内側 stroke + blur」を廃止)。
+    ///
+    /// モニタまたぎ時は各 overlay が自分の担当部分だけを描くため、`FocusFlashPresentation.displayId`
+    /// による判定はしない (震源 display と別の overlay でも windowFrame が自 display に重なれば描画対象)。
+    /// `windowFrameLocalRect` が交差計算 + view-local 変換を一手に担い、非交差 (nil) なら描画しない。
+    ///
+    /// 減衰 / 色 / 持続時間は SettingsStore.focus flash 系 (旧「モニタ縁」項目) をそのまま流用
+    /// (DR-0013 決定 1「initial opacity / duration / color は再利用」)。厚み・blur は kawaz 実機
+    /// フィードバックで再調整前提の初期値: 内側 6px + blur 3px (旧 24px + 8px からウィンドウ枠に
+    /// 適したスケールへ縮小)。
     @ViewBuilder
     private var focusFlashView: some View {
-        if let flash = model.focusFlash, flash.displayId == displayId,
-           let selfDisplay = model.state.displays.first(where: { $0.id == displayId }) {
-            let width = selfDisplay.logicalBounds.maxX - selfDisplay.logicalBounds.minX
-            let height = selfDisplay.logicalBounds.maxY - selfDisplay.logicalBounds.minY
-            let strokeThickness: CGFloat = 24
+        if let flash = model.focusFlash,
+           let windowFrame = model.state.focusFlash?.windowFrame,
+           let selfDisplay = model.state.displays.first(where: { $0.id == displayId }),
+           let localRect = windowFrameLocalRect(windowFrame: windowFrame, displayBounds: selfDisplay.logicalBounds) {
+            let width = localRect.maxX - localRect.minX
+            let height = localRect.maxY - localRect.minY
             // 色は SettingsStore 経由 (DR-0012)。alpha は color.a * flash.opacity の乗算。
             let ff = model.focusFlashColor
             let strokeColor = Color(.sRGB, red: ff.r, green: ff.g, blue: ff.b, opacity: ff.a * flash.opacity)
+            let strokeThickness: CGFloat = 6
             Rectangle()
                 .inset(by: strokeThickness / 2)
                 .stroke(strokeColor, lineWidth: strokeThickness)
-                .blur(radius: 8)
+                .blur(radius: 3)
                 .frame(width: width, height: height)
-                .position(x: width / 2, y: height / 2)
+                .position(x: localRect.minX + width / 2, y: localRect.minY + height / 2)
                 .allowsHitTesting(false)
         }
     }
@@ -146,12 +153,10 @@ struct LaserOverlayView: View {
     }
 
     private func drawLaser(context: GraphicsContext, from corner: CGPoint, to pointer: CGPoint) {
-        // #3 ポインタ手前で止めるテーパー: standoff は角→ポインタ距離の比率 (+ min/max クランプ) で
-        //   決める (2026-07-10 第 2 ラウンド、固定 40px から変更)。ポインタが角に極端に近いと描画不能 (nil)。
-        let dx = pointer.x - corner.x
-        let dy = pointer.y - corner.y
-        let distance = (dx * dx + dy * dy).squareRoot()
-        let standoff = LaserGeometry.standoffDistance(cornerToTargetDistance: distance)
+        // #3 DR-0013: standoff は SettingsStore `laserStandoffPx` (px 固定値、既定 40) を直接使う。
+        // 頂点辺半幅 tipHalfWidth は 0 に固定 (path は 3 頂点の完全な三角形)。ポインタが角から
+        // standoff+minLength 以下の距離だと taperApexPoint が nil を返し描画不能扱い。
+        let standoff = CGFloat(model.laserStandoffPx)
         guard let apex = LaserGeometry.taperApexPoint(from: corner, to: pointer, standoff: standoff)
         else { return }
 
@@ -166,30 +171,51 @@ struct LaserOverlayView: View {
         // DR-0012: 太さは SettingsStore 経由の model 値が単一情報源。LaserGeometry の default
         // 定数は SettingsStore の初期値としてのみ参照する (実描画には使わない)。
         let cornerHalfWidth = Float(model.laserCornerHalfWidth)
-        let tipHalfWidth = Float(model.laserTipHalfWidth)
 
         let c1 = s + perp * cornerHalfWidth
         let c2 = s - perp * cornerHalfWidth
-        let t1 = t + perp * tipHalfWidth
-        let t2 = t - perp * tipHalfWidth
 
+        // DR-0013: 頂点 1 点集約 — c1 → apex → c2 の 3 頂点で完全な三角形を描く
+        // (旧実装は tipHalfWidth*2 の頂点辺を持つ 4 頂点の台形)。
         let path = Path { path in
             path.move(to: CGPoint(x: CGFloat(c1.x), y: CGFloat(c1.y)))
-            path.addLine(to: CGPoint(x: CGFloat(t1.x), y: CGFloat(t1.y)))
-            path.addLine(to: CGPoint(x: CGFloat(t2.x), y: CGFloat(t2.y)))
+            path.addLine(to: apex)
             path.addLine(to: CGPoint(x: CGFloat(c2.x), y: CGFloat(c2.y)))
             path.closeSubpath()
         }
-        // DR-0012: グラデーション 3 stop は SettingsStore 経由の model 値が単一情報源。
-        // location (0.0 / 0.35 / 1.0) は現状固定 (色 stop の追加は Phase 2 検討)。
+        // DR-0013: グラデーション 2 stop (角 near / ポインタ側 far)。旧 mid (location 0.35) 廃止で
+        // 単純な線形ブレンドに戻す (SettingsStore 経由の model 値が単一情報源、DR-0012)。
         func gradientColor(_ c: RGBAColor) -> Color {
             Color(.sRGB, red: c.r, green: c.g, blue: c.b, opacity: c.a)
         }
         let gradient = Gradient(stops: [
             .init(color: gradientColor(model.laserColorNear), location: 0.0),
-            .init(color: gradientColor(model.laserColorMid), location: 0.35),
             .init(color: gradientColor(model.laserColorFar), location: 1.0)
         ])
         context.fill(path, with: .linearGradient(gradient, startPoint: corner, endPoint: apex))
     }
+}
+
+/// ウィンドウ枠 (CG グローバル論理座標) を自 display の view-local 座標系 (top-left 原点、px)
+/// にクリップして返す純関数 (DR-0013 決定 1)。
+///
+/// - `windowFrame`: 震源ウィンドウ全体の CG グローバル rect
+/// - `displayBounds`: 自 display の CG グローバル bounds
+/// - 返り値: `windowFrame ∩ displayBounds` を `displayBounds.min` で減算した view-local rect。
+///   交差が空 (接するだけ含む) の場合は nil (= 自 display に描くべきものが無い)
+///
+/// モニタまたぎのウィンドウはそれぞれの overlay が本関数で自分の担当部分を計算し、非交差の
+/// overlay は描画をスキップする (LaserOverlayView.focusFlashView が判定に使う)。
+func windowFrameLocalRect(windowFrame: LogicalRect, displayBounds: LogicalRect) -> LogicalRect? {
+    let minX = max(windowFrame.minX, displayBounds.minX)
+    let minY = max(windowFrame.minY, displayBounds.minY)
+    let maxX = min(windowFrame.maxX, displayBounds.maxX)
+    let maxY = min(windowFrame.maxY, displayBounds.maxY)
+    // 空 (幅 or 高さ 0 以下) の交差は「重ならない」扱い。境界で接するだけのケースも nil。
+    guard minX < maxX, minY < maxY else { return nil }
+    return LogicalRect(
+        minX: minX - displayBounds.minX,
+        minY: minY - displayBounds.minY,
+        maxX: maxX - displayBounds.minX,
+        maxY: maxY - displayBounds.minY)
 }

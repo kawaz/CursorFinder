@@ -15,6 +15,7 @@ DR-0001 は前身の実験リポ (LaserGuideV3) 側にあり、本リポには�
 - [DR-0010-release-packaging](./DR-0010-release-packaging.md) — SPM 完結 + スクリプト .app バンドル、xcodeproj 廃止 (Proposed)
 - [DR-0011-focus-wave-mm-space](./DR-0011-focus-wave-mm-space.md) — フォーカス波動エフェクト: mm 空間 + 隣接物理レイアウト、AXObserver でウィンドウ単位観測 (Accepted)
 - [DR-0012-settings-window](./DR-0012-settings-window.md) — 設定ウィンドウ: SwiftUI TabView + SettingsStore 単一情報源、キャリブレーションをタブ統合 (Accepted)
+- [DR-0013-focus-flash-window-frame-and-laser-simplification](./DR-0013-focus-flash-window-frame-and-laser-simplification.md) — フォーカスフラッシュをウィンドウ枠アウトラインに (モニタ縁廃止)、AX 購読拡張、レーザー形状簡素化、Slider レンジ統一 (Accepted)
 
 ## Archived
 

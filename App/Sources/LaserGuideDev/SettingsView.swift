@@ -89,23 +89,25 @@ private struct LaserSettingsTab: View {
     var body: some View {
         ScrollView {
             Form {
+                // DR-0013 決定 4: 秒系 Slider は全て 0...2.0 step 0.05 に統一 (目盛りのバラつき解消)。
                 Section("タイミング") {
-                    SliderRow(label: "表示デバウンス", unit: "s", range: 0...1, step: 0.05,
+                    SliderRow(label: "表示デバウンス", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.laserShowDebounce)
-                    SliderRow(label: "非アクティブ非表示閾値", unit: "s", range: 0.1...2.0, step: 0.05,
+                    SliderRow(label: "非アクティブ非表示閾値", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.inactivityThreshold)
-                    SliderRow(label: "フェードアウト時間", unit: "s", range: 0...1, step: 0.05,
+                    SliderRow(label: "フェードアウト時間", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.laserFadeOutDuration)
                 }
+                // DR-0013 決定 3: 頂点辺半幅を廃止 (常に 0)、「消える範囲半径」を px 固定値の項目に。
                 Section("形状 (px)") {
                     SliderRow(label: "角側半幅", unit: "px", range: 1...32, step: 0.5,
                               value: $store.settings.laserCornerHalfWidth)
-                    SliderRow(label: "頂点辺半幅", unit: "px", range: 0.25...8, step: 0.25,
-                              value: $store.settings.laserTipHalfWidth)
+                    SliderRow(label: "消える範囲半径", unit: "px", range: 0...200, step: 5,
+                              value: $store.settings.laserStandoffPx)
                 }
+                // DR-0013 決定 3: グラデ mid 廃止、2 stop (角側 / ポインタ側) に。
                 Section("グラデーション色") {
                     RGBAColorRow(label: "角側", color: $store.settings.laserColorNear)
-                    RGBAColorRow(label: "中央", color: $store.settings.laserColorMid)
                     RGBAColorRow(label: "ポインタ側", color: $store.settings.laserColorFar)
                 }
                 Section {
@@ -123,15 +125,17 @@ private struct FocusFlashSettingsTab: View {
     var body: some View {
         ScrollView {
             Form {
-                Section("モニタ縁") {
-                    SliderRow(label: "持続時間", unit: "s", range: 0.1...2.0, step: 0.05,
+                // DR-0013 決定 1: 旧「モニタ縁」項目は「ウィンドウ枠」ラベルに変更 (項目自体は再利用)。
+                // DR-0013 決定 4: 秒系 Slider は全て 0...2.0 step 0.05。
+                Section("ウィンドウ枠") {
+                    SliderRow(label: "持続時間", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.focusFlashDuration)
                     SliderRow(label: "初期不透明度", unit: "", range: 0...1, step: 0.05,
                               value: $store.settings.focusFlashInitialOpacity)
                     RGBAColorRow(label: "色", color: $store.settings.focusFlashColor)
                 }
                 Section("波動 (DR-0011)") {
-                    SliderRow(label: "進行時間", unit: "s", range: 0.1...2.0, step: 0.05,
+                    SliderRow(label: "進行時間", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.waveDuration)
                     SliderRow(label: "帯幅", unit: "mm", range: 5...100, step: 1,
                               value: $store.settings.waveBandMM)
