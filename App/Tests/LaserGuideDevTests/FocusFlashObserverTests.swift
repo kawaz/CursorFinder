@@ -124,16 +124,46 @@ final class FocusFlashObserverTests: XCTestCase {
     /// `observedAXNotifications` の順序で呼ぶ。テストは AXObserver 実物なしで「呼ばれた列」を記録する
     /// mock を差し込んで、通知列が固定順で登録経路に流れることを固定する
     /// (= `installAXObserver` の副作用注入部が 3 通知を漏らさず登録する契約)。
+    /// register は登録成否を Bool で返す契約 (DR-0013 追記 M-3)。全成功のケースを本テストで固定する。
     func testInstallAXNotificationsInvokesRegisterForAllObservedNotificationsInOrder() {
         var recorded: [String] = []
-        FocusFlashObserver.installAXNotifications { notif in
+        let successCount = FocusFlashObserver.installAXNotifications { notif in
             recorded.append(notif as String)
+            return true  // 全通知が成功する mock (実行時 API の .success と対応)
         }
         XCTAssertEqual(recorded, [
             kAXFocusedWindowChangedNotification as String,
             kAXMainWindowChangedNotification as String,
             kAXWindowCreatedNotification as String
         ], "installAXNotifications は 3 通知を定数列順で register に流す")
+        XCTAssertEqual(successCount, 3, "全通知成功時は success 件数 = 通知数 (呼び出し側の tearDown 判定材料)")
+    }
+
+    /// DR-0013 追記 M-3: 全通知の登録が失敗した時 `installAXNotifications` は success=0 を返し、
+    /// 呼び出し側 (`installAXObserver`) は AXObserver を RunLoop に張らずに return する契約
+    /// (成功が 0 で observer 張るだけだと idle observer が RunLoop に leak するため)。
+    /// 本テストは success=0 の観測を固定するだけで、caller 側の分岐は install 側と別関数のため対象外。
+    func testInstallAXNotificationsReturnsZeroWhenAllRegistrationsFail() {
+        var recorded: [String] = []
+        let successCount = FocusFlashObserver.installAXNotifications { notif in
+            recorded.append(notif as String)
+            return false  // 全通知失敗 (AX 非対応 app 等の想定)
+        }
+        // 全通知が試行される (途中で早期 return しない、部分成功時の degrade を尊重する
+        // 純関数契約が保たれること)
+        XCTAssertEqual(recorded.count, 3, "全通知が試行されてから success 件数を返す (途中打ち切りしない)")
+        XCTAssertEqual(successCount, 0, "全失敗時は 0 を返し、呼び出し側が tearDown 判断に使う")
+    }
+
+    /// DR-0013 追記 M-3: 部分成功 (1 通知だけ成功) の場合、success=1 を返す。呼び出し側は success>0
+    /// を確認して observer を RunLoop に張る (残った通知経路で degrade 動作させる、DR-0013 決定 2 の方針)。
+    func testInstallAXNotificationsReturnsSuccessCountOnPartialSuccess() {
+        let firstNotif = kAXFocusedWindowChangedNotification as String
+        let successCount = FocusFlashObserver.installAXNotifications { notif in
+            // 1 番目の通知だけ成功、残り 2 通知は失敗
+            return (notif as String) == firstNotif
+        }
+        XCTAssertEqual(successCount, 1, "部分成功時は成功数を返す (>0 で observer を張り degrade 動作)")
     }
 
     /// 対称: `removeAXNotifications` も同じ順序で unregister を呼ぶ (`tearDownAXObserver` の
@@ -163,6 +193,7 @@ final class FocusFlashObserverTests: XCTestCase {
         ]
         FocusFlashObserver.installAXNotifications(notifications: custom) { notif in
             recorded.append(notif as String)
+            return true
         }
         XCTAssertEqual(recorded, [
             kAXWindowCreatedNotification as String,

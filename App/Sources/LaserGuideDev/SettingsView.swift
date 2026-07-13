@@ -127,11 +127,17 @@ private struct FocusFlashSettingsTab: View {
             Form {
                 // DR-0013 決定 1: 旧「モニタ縁」項目は「ウィンドウ枠」ラベルに変更 (項目自体は再利用)。
                 // DR-0013 決定 4: 秒系 Slider は全て 0...2.0 step 0.05。
+                // DR-0013 追記: stroke 厚み / blur 半径も設定項目化 (色 α だけを 0 にしても blur 域が残る等の
+                // 実機 UX 調整余地を残すため、DR-0012 決定 2「表示チューニングは SettingsStore 単一情報源」との整合)。
                 Section("ウィンドウ枠") {
                     SliderRow(label: "持続時間", unit: "s", range: 0...2.0, step: 0.05,
                               value: $store.settings.focusFlashDuration)
                     SliderRow(label: "初期不透明度", unit: "", range: 0...1, step: 0.05,
                               value: $store.settings.focusFlashInitialOpacity)
+                    SliderRow(label: "stroke 厚み", unit: "px", range: 1...20, step: 0.5,
+                              value: $store.settings.focusFlashStrokeWidth)
+                    SliderRow(label: "blur 半径", unit: "px", range: 0...16, step: 0.5,
+                              value: $store.settings.focusFlashBlurRadius)
                     RGBAColorRow(label: "色", color: $store.settings.focusFlashColor)
                 }
                 Section("波動 (DR-0011)") {

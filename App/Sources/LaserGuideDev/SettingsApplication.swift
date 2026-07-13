@@ -106,6 +106,8 @@ extension DisplaySettings {
         vm.focusFlashDuration = focusFlashDuration
         vm.focusFlashInitialOpacity = focusFlashInitialOpacity
         vm.focusFlashColor = focusFlashColor
+        vm.focusFlashStrokeWidth = focusFlashStrokeWidth
+        vm.focusFlashBlurRadius = focusFlashBlurRadius
         vm.waveDuration = waveDuration
         vm.waveBandMM = waveBandMM
         vm.waveInitialOpacity = waveInitialOpacity

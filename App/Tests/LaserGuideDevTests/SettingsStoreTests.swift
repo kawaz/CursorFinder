@@ -116,6 +116,11 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(d.laserFadeOutDuration, 0.25)
         XCTAssertEqual(d.focusFlashDuration, 0.5)
         XCTAssertEqual(d.focusFlashInitialOpacity, 0.6)
+        // DR-0013 追記 M-1: stroke 厚み / blur 半径の default 固定 (旧 hardcode の 6 / 3 を移設)。
+        XCTAssertEqual(d.focusFlashStrokeWidth, 6.0,
+                       "旧 LaserOverlayView.focusFlashView の hardcode 値 (6px) を default で保つ")
+        XCTAssertEqual(d.focusFlashBlurRadius, 3.0,
+                       "旧 LaserOverlayView.focusFlashView の hardcode 値 (3px) を default で保つ")
         XCTAssertEqual(d.waveDuration, 0.35)
         XCTAssertEqual(d.waveBandMM, 30)
         XCTAssertEqual(d.waveInitialOpacity, 0.5)
@@ -203,11 +208,15 @@ final class SettingsStoreTests: XCTestCase {
     }
 
     /// resettingFocusFlash はウィンドウ枠 + 波動を default に戻し、レーザー / 一般タブは保持。
+    /// DR-0013 追記 M-1: focusFlashStrokeWidth / focusFlashBlurRadius もフォーカスフラッシュタブ配下
+    /// (「ウィンドウ枠」セクション) のため、reset 対象に含まれることを固定する。
     func testResettingFocusFlashRestoresOnlyFlashAndWave() {
         var s = DisplaySettings.defaults
         s.warpEnabled = false                    // 一般 (保持)
         s.laserShowDebounce = 0.99               // レーザー (保持)
         s.focusFlashDuration = 0.99              // フラッシュ (戻る)
+        s.focusFlashStrokeWidth = 15             // フラッシュ / stroke (戻る)
+        s.focusFlashBlurRadius = 10              // フラッシュ / blur (戻る)
         s.waveBandMM = 99                        // 波動 (戻る)
         s.waveColor = RGBAColor.parseHex("#00000000")!  // 波動 (戻る)
 
@@ -215,6 +224,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(r.warpEnabled, false)
         XCTAssertEqual(r.laserShowDebounce, 0.99)
         XCTAssertEqual(r.focusFlashDuration, DisplaySettings.defaults.focusFlashDuration)
+        XCTAssertEqual(r.focusFlashStrokeWidth, DisplaySettings.defaults.focusFlashStrokeWidth,
+                       "stroke 厚みも default に戻る (フォーカスフラッシュタブ配下)")
+        XCTAssertEqual(r.focusFlashBlurRadius, DisplaySettings.defaults.focusFlashBlurRadius,
+                       "blur 半径も default に戻る (フォーカスフラッシュタブ配下)")
         XCTAssertEqual(r.waveBandMM, DisplaySettings.defaults.waveBandMM)
         XCTAssertEqual(r.waveColor, DisplaySettings.defaults.waveColor)
     }
@@ -261,6 +274,8 @@ final class SettingsStoreTests: XCTestCase {
         s.focusFlashDuration = 0.9
         s.focusFlashInitialOpacity = 0.3
         s.focusFlashColor = RGBAColor.parseHex("#0A0B0CCC")!
+        s.focusFlashStrokeWidth = 9
+        s.focusFlashBlurRadius = 4
         s.waveDuration = 0.77
         s.waveBandMM = 77
         s.waveInitialOpacity = 0.22
@@ -282,6 +297,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(vm.focusFlashDuration, 0.9)
         XCTAssertEqual(vm.focusFlashInitialOpacity, 0.3)
         XCTAssertEqual(vm.focusFlashColor, s.focusFlashColor)
+        XCTAssertEqual(vm.focusFlashStrokeWidth, 9,
+                       "M-1: stroke 厚みも VM に流れる (旧 hardcode 6px を SettingsStore 経由に置換)")
+        XCTAssertEqual(vm.focusFlashBlurRadius, 4,
+                       "M-1: blur 半径も VM に流れる (旧 hardcode 3px を SettingsStore 経由に置換)")
         XCTAssertEqual(vm.waveDuration, 0.77)
         XCTAssertEqual(vm.waveBandMM, 77)
         XCTAssertEqual(vm.waveInitialOpacity, 0.22)

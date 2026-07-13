@@ -108,14 +108,21 @@ public final class FocusFlashObserver {
         kAXWindowCreatedNotification as CFString
     ]
 
-    /// `observedAXNotifications` を順に `register` へ渡す純関数 (テスト可能な形の副作用注入)。
-    /// 実行時 `installAXObserver` は `AXObserverAddNotification` を呼ぶ closure を渡し、テストは
-    /// 「呼ばれた CFString 列」を記録する mock を渡して 3 通知が定数列通りに登録されることを固定する。
+    /// `observedAXNotifications` を順に `register` へ渡し、成功した通知数を返す純関数
+    /// (テスト可能な形の副作用注入 + AX API 失敗検知)。
+    ///
+    /// register closure は各通知の登録が成功したかを Bool で返す (実行時は `AXObserverAddNotification`
+    /// の `.success` 判定、テストでは任意のフラグを返す mock)。返り値の合計は、呼び出し側
+    /// (`installAXObserver`) が「全通知登録失敗 → observer leak を防ぐため即 tearDown」の判断に使う
+    /// (DR-0013 追記 M-3)。
+    @discardableResult
     public static func installAXNotifications(
         notifications: [CFString] = observedAXNotifications,
-        register: (CFString) -> Void
-    ) {
-        for notif in notifications { register(notif) }
+        register: (CFString) -> Bool
+    ) -> Int {
+        var success = 0
+        for notif in notifications where register(notif) { success += 1 }
+        return success
     }
 
     /// `observedAXNotifications` を順に `unregister` へ渡す純関数 (`installAXNotifications` と対称)。
@@ -212,11 +219,20 @@ public final class FocusFlashObserver {
         // DR-0013: 3 通知を定数列 (`observedAXNotifications`) で一括登録。1 通知でも登録失敗した場合は
         // NSLog に残しつつ他の通知は登録を継続する (kAXWindowCreated が古い app で unsupported の場合等、
         // 他の通知だけでも動く方が価値がある — 全滅させない、DR-0013 の degrade 方針)。
-        Self.installAXNotifications { notif in
+        let successCount = Self.installAXNotifications { notif -> Bool in
             let err = AXObserverAddNotification(obs, app, notif, refcon)
             if err != .success {
                 NSLog("[LaserGuide focus] AXObserverAddNotification failed: pid=\(pid) notif=\(notif) axError=\(err.rawValue)")
+                return false
             }
+            return true
+        }
+        // DR-0013 追記 M-3: 3 通知が全て失敗した場合、AXObserver は idle のまま残る → tearDown せずに
+        // return すると RunLoop に leak する。install 成功が 0 なら observer を即破棄して return。
+        // 部分成功 (1 or 2 通知だけ登録できた) 場合は残った通知経路で degrade 動作を継続する。
+        guard successCount > 0 else {
+            NSLog("[LaserGuide focus] all AXObserverAddNotification failed: pid=\(pid), tearing down observer to avoid leak")
+            return
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         self.axObserver = obs

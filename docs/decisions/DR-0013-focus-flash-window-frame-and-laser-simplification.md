@@ -74,6 +74,25 @@ DR-0011 決定 5「モニタ縁と波動の併存」を撤回。フォーカス�
 設定ウィンドウのタブから開けるため冗長。⌘K は unused に (設定... の "," で開いて
 タブへ移動する運用に集約)。
 
+## 追記 (2026-07-13 レビュー後)
+
+- **ウィンドウ枠の描画は windowFrame 全体を stroke してから display にクリップ**
+  する: intersection 矩形の 4 辺を単純に stroke すると、モニタまたぎ時に**display
+  境界 (= 実際のウィンドウ枠ではない辺)** に線が乗る。両 overlay の境界辺が
+  つながって「モニタ境界に太い線」となる描画欠陥を避けるため、windowFrame の
+  Rectangle を描いてから `.clipShape(自 display 領域)` で切る (境界辺は描画されない)
+- **stroke 厚み / blur 半径は SettingsStore に載せる** (`focusFlashStrokeWidth` /
+  `focusFlashBlurRadius`)。DR-0012 決定 2「表示チューニングは SettingsStore 単一
+  情報源」との整合、および実機で色 α を 0 にしても blur 域が残る等の UX 調整
+  余地を残すため
+- **`laserStandoffPx` は `max(0, standoff)` で clamp** して負値経路を防衛
+  (UI Slider は 0...200 なので現状経路は安全だが、旧 JSON / 直接編集耐性)
+- **AX 通知の全失敗時 tearDown**: 3 通知全部 register 失敗した場合、AXObserver
+  は idle のまま RunLoop に張られ leak する。install 内で成功カウンタを取り、
+  0 なら tearDown してから return する
+- **フェード時間 0 秒は「発火しない」に倒す**: focusFlashDuration=0 / waveDuration=0
+  でも 1 tick だけ発火する現状は UX 齟齬。VM 側で 0 なら早期 return
+
 ## SettingsStore schema の互換性
 
 - 削除フィールド: `laserColorMid`, `laserTipHalfWidth`

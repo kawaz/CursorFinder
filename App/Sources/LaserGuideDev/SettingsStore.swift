@@ -140,6 +140,10 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
     public var focusFlashInitialOpacity: Double
     /// ウィンドウ枠ハイライトの色 (opacity は上の initial で乗算する形になる)。既定 systemBlue 相当。
     public var focusFlashColor: RGBAColor
+    /// ウィンドウ枠 stroke の厚み (px)。DR-0013 追記でハードコードから設定項目化。既定 6px。
+    public var focusFlashStrokeWidth: Double
+    /// ウィンドウ枠 stroke に掛ける blur 半径 (px)。0 = blur なし。DR-0013 追記で設定項目化。既定 3px。
+    public var focusFlashBlurRadius: Double
 
     // MARK: フォーカス波動 (DR-0011)
     /// 波動の進行時間。既定 0.35s (第 5 ラウンド実機裁定)。
@@ -186,6 +190,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         focusFlashDuration: 0.5,
         focusFlashInitialOpacity: 0.6,
         focusFlashColor: hexLiteral("#0091FFFF"),
+        focusFlashStrokeWidth: 6.0,
+        focusFlashBlurRadius: 3.0,
         waveDuration: 0.35,
         waveBandMM: 30.0,
         waveInitialOpacity: 0.5,
@@ -229,6 +235,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         self.focusFlashDuration = try c.decodeIfPresent(Double.self, forKey: .focusFlashDuration) ?? d.focusFlashDuration
         self.focusFlashInitialOpacity = try c.decodeIfPresent(Double.self, forKey: .focusFlashInitialOpacity) ?? d.focusFlashInitialOpacity
         self.focusFlashColor = try c.decodeIfPresent(RGBAColor.self, forKey: .focusFlashColor) ?? d.focusFlashColor
+        self.focusFlashStrokeWidth = try c.decodeIfPresent(Double.self, forKey: .focusFlashStrokeWidth) ?? d.focusFlashStrokeWidth
+        self.focusFlashBlurRadius = try c.decodeIfPresent(Double.self, forKey: .focusFlashBlurRadius) ?? d.focusFlashBlurRadius
         self.waveDuration = try c.decodeIfPresent(Double.self, forKey: .waveDuration) ?? d.waveDuration
         self.waveBandMM = try c.decodeIfPresent(Double.self, forKey: .waveBandMM) ?? d.waveBandMM
         self.waveInitialOpacity = try c.decodeIfPresent(Double.self, forKey: .waveInitialOpacity) ?? d.waveInitialOpacity
@@ -250,6 +258,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         focusFlashDuration: Double,
         focusFlashInitialOpacity: Double,
         focusFlashColor: RGBAColor,
+        focusFlashStrokeWidth: Double,
+        focusFlashBlurRadius: Double,
         waveDuration: Double,
         waveBandMM: Double,
         waveInitialOpacity: Double,
@@ -268,6 +278,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         self.focusFlashDuration = focusFlashDuration
         self.focusFlashInitialOpacity = focusFlashInitialOpacity
         self.focusFlashColor = focusFlashColor
+        self.focusFlashStrokeWidth = focusFlashStrokeWidth
+        self.focusFlashBlurRadius = focusFlashBlurRadius
         self.waveDuration = waveDuration
         self.waveBandMM = waveBandMM
         self.waveInitialOpacity = waveInitialOpacity
@@ -304,6 +316,8 @@ public struct DisplaySettings: Codable, Equatable, Sendable {
         copy.focusFlashDuration = Self.defaults.focusFlashDuration
         copy.focusFlashInitialOpacity = Self.defaults.focusFlashInitialOpacity
         copy.focusFlashColor = Self.defaults.focusFlashColor
+        copy.focusFlashStrokeWidth = Self.defaults.focusFlashStrokeWidth
+        copy.focusFlashBlurRadius = Self.defaults.focusFlashBlurRadius
         copy.waveDuration = Self.defaults.waveDuration
         copy.waveBandMM = Self.defaults.waveBandMM
         copy.waveInitialOpacity = Self.defaults.waveInitialOpacity

@@ -105,6 +105,10 @@ public final class OverlayViewModel: ObservableObject {
     @Published public var laserStandoffPx: Double = DisplaySettings.defaults.laserStandoffPx
     /// フォーカスフラッシュ (ウィンドウ枠) の色。alpha は focusFlashInitialOpacity と乗算して描画される。
     @Published public var focusFlashColor: RGBAColor = DisplaySettings.defaults.focusFlashColor
+    /// ウィンドウ枠 stroke の厚み (px)。DR-0013 追記で SettingsStore 経由の設定項目化。
+    @Published public var focusFlashStrokeWidth: Double = DisplaySettings.defaults.focusFlashStrokeWidth
+    /// ウィンドウ枠 stroke に掛ける blur 半径 (px、0 = blur なし)。DR-0013 追記で設定項目化。
+    @Published public var focusFlashBlurRadius: Double = DisplaySettings.defaults.focusFlashBlurRadius
     /// フォーカス波動リングの色。alpha は wave.opacity と乗算して描画される。
     @Published public var waveColor: RGBAColor = DisplaySettings.defaults.waveColor
 
@@ -204,7 +208,7 @@ public final class OverlayViewModel: ObservableObject {
         // (displayConfigurationChanged 等) では何もしない。
         if let ff = state.focusFlash, ff.generation != lastFocusFlashGeneration {
             lastFocusFlashGeneration = ff.generation
-            startFocusFlash(displayId: ff.displayId)
+            startFocusFlash()
             startWave(displays: state.displays, displayId: ff.displayId, windowFrame: ff.windowFrame)
         }
     }
@@ -290,23 +294,31 @@ public final class OverlayViewModel: ObservableObject {
         clickCircle = nil
     }
 
-    /// フォーカスフラッシュを立ち上げてフェードアウトさせる (DR-0009 Phase A)。
+    /// フォーカスフラッシュを立ち上げてフェードアウトさせる (DR-0009 Phase A + DR-0013 決定 1)。
     /// state 経由の generation 変化検知から呼ばれる内部関数。
     ///
     /// 減衰は clickCircle 側と同じ pattern: 30ms 刻みで `focusFlashDuration / step` 回に分けて
     /// opacity を減らし、0 に達したら nil に戻す。SwiftUI の暗黙 animation ではなく AppKit Timer で
     /// 明示的に段階更新するのは、キャリブレーション画面表示中の main run loop 占有下でも
     /// 予測可能な速度で減衰させるため (プレゼンテーションクリックと同じ理由)。
-    private func startFocusFlash(displayId: String) {
+    ///
+    /// DR-0013 追記 m-4: `focusFlashDuration <= 0` は「発火しない」に倒す (UX として「0 秒 = 表示させない」
+    /// を意図設定として解釈する)。従来は 1 tick だけちらつくノイズが出ていた。
+    private func startFocusFlash() {
         focusFlashFadeTimer?.invalidate()
         focusFlashFadeTimer = nil
-        focusFlash = FocusFlashPresentation(displayId: displayId, opacity: focusFlashInitialOpacity)
+        // duration=0 は発火しない (m-4)。ここで戻る前に既存 focusFlash も念のため nil に落として
+        // 「0 に設定した瞬間に静止する」振る舞いを保つ (トグル off と同型)。
+        guard focusFlashDuration > 0 else {
+            focusFlash = nil
+            return
+        }
+        focusFlash = FocusFlashPresentation(opacity: focusFlashInitialOpacity)
 
         let step: TimeInterval = 0.03
         let ticks = max(1, Int(focusFlashDuration / step))
         let delta = focusFlashInitialOpacity / Double(ticks)
         var opacity = focusFlashInitialOpacity
-        let capturedId = displayId
         let timer = Timer(timeInterval: step, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             opacity -= delta
@@ -315,7 +327,7 @@ public final class OverlayViewModel: ObservableObject {
                 t.invalidate()
                 self.focusFlashFadeTimer = nil
             } else {
-                self.focusFlash = FocusFlashPresentation(displayId: capturedId, opacity: opacity)
+                self.focusFlash = FocusFlashPresentation(opacity: opacity)
             }
         }
         focusFlashFadeTimer = timer
@@ -326,9 +338,19 @@ public final class OverlayViewModel: ObservableObject {
     /// `displays` から隣接物理レイアウトを構築し `wavePlacements` へ固定 (発火の瞬間のみ再計算、
     /// view 側基準がぶれないようにするため)。震源 displayId の placement が無ければ発火しない
     /// (state 不整合時のみ)。進行は他エフェクトと同じ 30ms 刻み Timer で progress を 0→1 に進める。
+    ///
+    /// DR-0013 追記 m-4: `waveDuration <= 0` は「発火しない」に倒す (UX として「0 秒 = 発火させない」
+    /// の意図設定として解釈する)。従来は 1 tick だけちらつくノイズが出ていた。
     private func startWave(displays: [Display], displayId: String, windowFrame: LogicalRect) {
         waveTimer?.invalidate()
         waveTimer = nil
+        // duration=0 は発火しない (m-4)。既存 wave / placements も念のためクリアして
+        // 「0 に設定した瞬間に静止する」振る舞いを保つ。
+        guard waveDuration > 0 else {
+            wave = nil
+            wavePlacements = []
+            return
+        }
         let placements = WaveLayout.placements(displays: displays)
         wavePlacements = placements
         guard let epicenterPlacement = placements.first(where: { $0.displayId == displayId }) else {

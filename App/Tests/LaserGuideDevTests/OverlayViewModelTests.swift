@@ -333,8 +333,9 @@ final class OverlayViewModelTests: XCTestCase {
         vm.apply(state: next)
 
         XCTAssertNotNil(vm.focusFlash, "初回 state はリーディングエッジで即時立ち上がる")
-        XCTAssertEqual(vm.focusFlash?.displayId, "A")
-        // Timer 減衰は非同期なので上限で確認 (立ち上がり直後は initial に近い)
+        // Timer 減衰は非同期なので上限で確認 (立ち上がり直後は initial に近い)。
+        // DR-0013 追記 m-1 で displayId フィールドが廃止されたため、opacity のみで立ち上がりを確認する
+        // (windowFrame 交差判定は LaserOverlayView 側の描画時に行うため VM 層では担当しない)。
         XCTAssertGreaterThan(vm.focusFlash?.opacity ?? -1, 0.3)
     }
 
@@ -456,6 +457,44 @@ final class OverlayViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.wave, "再発火で復活")
         XCTAssertEqual(vm.wave?.epicenterMM, PhysicalRect(minX: 500, minY: 500, maxX: 700, maxY: 700),
                        "generation が進めば古いタイマーは破棄され、新しい震源の波に置き換わる")
+    }
+
+    /// DR-0013 追記 m-4: `focusFlashDuration = 0` の時、generation 変化が届いても focusFlash は
+    /// 発火しない (nil のまま)。「0 秒 = 表示させない」を UX 意図設定として解釈する契約。
+    /// 従来は 1 tick だけ opacity>0 のちらつきが出ていた。
+    func testFocusFlashWithZeroDurationDoesNotFire() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.focusFlashDuration = 0  // ← 発火抑止条件
+        vm.focusFlashInitialOpacity = 0.6
+
+        var next = makeState(mouse: nil)
+        next.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
+        vm.apply(state: next)
+
+        // 負の検証: 発火しないので nil のまま。trailing flush 分の猶予を回してから確認 (即時反映も含めた
+        // どの経路でも発火しないことを固定)。
+        waitUntil(timeout: 0.1) { false }
+        XCTAssertNil(vm.focusFlash, "focusFlashDuration=0 は発火しない (m-4)")
+    }
+
+    /// DR-0013 追記 m-4: `waveDuration = 0` の時、generation 変化が届いても wave は発火しない
+    /// (nil のまま)。focusFlash と対称の契約。
+    func testWaveWithZeroDurationDoesNotFire() {
+        let vm = OverlayViewModel(initialState: makeState(mouse: nil))
+        vm.flushInterval = 0.02
+        vm.waveDuration = 0  // ← 発火抑止条件
+
+        var next = makeState(mouse: nil)
+        next.focusFlash = FocusFlashState(
+            displayId: "A", windowFrame: LogicalRect(minX: 0, minY: 0, maxX: 100, maxY: 100), generation: 1)
+        vm.apply(state: next)
+
+        waitUntil(timeout: 0.1) { false }
+        XCTAssertNil(vm.wave, "waveDuration=0 は発火しない (m-4)")
+        XCTAssertTrue(vm.wavePlacements.isEmpty,
+                      "waveDuration=0 は wavePlacements も空のまま (発火時のスナップショットを取らない)")
     }
 
     /// clearFocusFlash() で focusFlash と併せて wave も即座に nil へ戻る

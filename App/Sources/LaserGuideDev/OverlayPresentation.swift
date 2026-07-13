@@ -35,18 +35,19 @@ public struct ClickCirclePresentation: Equatable, Sendable {
     }
 }
 
-/// フォーカスフラッシュ (DR-0009 Phase A) の描画表現。overlay ごとに保持する。
+/// フォーカスフラッシュ (DR-0009 Phase A + DR-0013 決定 1) の描画表現。overlay ごとに保持する。
 ///
-/// Core (`FocusFlashState`) は「どのモニタに向けてフラッシュを立てたか」と「連続発火の識別用
-/// generation」だけを持ち、時刻・フェード進行は描画層 (VM) が管理する (DR-0004 の「Store は
-/// 純関数、時刻・非決定性を持ち込まない」を維持するため)。
-/// - `displayId`: フォーカス先のモニタ id。LaserOverlayView は自 display と一致した時のみ縁を描く
+/// Core (`FocusFlashState`) は「震源ウィンドウの CG global frame」と「連続発火の識別用 generation」
+/// を持ち、時刻・フェード進行は描画層 (VM) が管理する (DR-0004 の「Store は純関数、時刻・非決定性を
+/// 持ち込まない」を維持するため)。**DR-0013 決定 1 以降、描画対象は震源ウィンドウ枠**であり、
+/// モニタ担当判定は `state.focusFlash?.windowFrame` を各 overlay の display bounds で交差判定
+/// する形 (LaserOverlayView.focusFlashView) に統一。かつての `displayId` フィールドは
+/// 判定に不要になったため廃止 (DR-0013 追記 m-1)。
+///
 /// - `opacity`: 立ち上がり直後は `initialOpacity`、時間経過で 0 まで減衰
 public struct FocusFlashPresentation: Equatable, Sendable {
-    public let displayId: String
     public let opacity: Double
-    public init(displayId: String, opacity: Double) {
-        self.displayId = displayId
+    public init(opacity: Double) {
         self.opacity = opacity
     }
 }

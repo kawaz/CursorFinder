@@ -1,14 +1,13 @@
 // LaserOverlayView — 自ディスプレイの 4 隅からポインタへレーザーを描く SwiftUI ビュー。
 //
-// 2026-07-10 実機フィードバック反映 (#1 / #2 / #3 / #4、詳細は LaserGeometry.swift の
-// ヘッダコメント):
+// 描画要件 (詳細は LaserGeometry.swift のヘッダコメント):
 //
 //   #1 自ディスプレイの 4 角のみを起点にする (他ディスプレイの角の延長線は描かない)
 //   #2 ポインタ移動停止後 `OverlayViewModel.inactivityThreshold` 経過でレーザーを非表示
-//   #3 corner (幅 cornerHalfWidth*2) が底辺、ポインタから standoff 手前が幅 tipHalfWidth*2
-//      の頂点辺となるテーパー付き三角形。ポインタに触れない
+//   #3 corner (幅 cornerHalfWidth*2) が底辺、target から `laserStandoffPx` 手前が頂点 (1 点)
+//      に集約された完全な三角形。ポインタには触れない (DR-0013 決定 3)
 //   #4 pose を経由せず CG global 論理座標のまま self bounds を減算して view local を得る
-//      (Phase 1 で cross-display の mm 空間が共有されていない前提から根本的に修正)
+//      (cross-display の mm 空間が共有されていない前提のため、pose 経由の変換は不整合を招く)
 //
 // 描画境界の変換規則 (DR-0005 決定 2):
 //   - 判定・state は CG y-down グローバル
@@ -93,36 +92,55 @@ struct LaserOverlayView: View {
         }
     }
 
-    /// フォーカスフラッシュ描画 (DR-0013): 震源ウィンドウ枠 (`state.focusFlash.windowFrame`) を
-    /// 自 display と交差する部分だけアウトライン描画する (旧「モニタ内側 stroke + blur」を廃止)。
+    /// フォーカスフラッシュ描画 (DR-0013 決定 1 + 追記): 震源ウィンドウ枠
+    /// (`state.focusFlash.windowFrame`) をアウトラインで描画する。モニタまたぎ時は各 overlay が
+    /// **自分の display 領域だけを clip** した描画を担当し、境界に沿った辺 (= 実際のウィンドウ枠では
+    /// ない辺) が引かれないようにする (DR-0013 追記の C-1 修正)。
     ///
-    /// モニタまたぎ時は各 overlay が自分の担当部分だけを描くため、`FocusFlashPresentation.displayId`
-    /// による判定はしない (震源 display と別の overlay でも windowFrame が自 display に重なれば描画対象)。
-    /// `windowFrameLocalRect` が交差計算 + view-local 変換を一手に担い、非交差 (nil) なら描画しない。
+    /// 実装契約:
+    /// - 交差判定 (自 display に描くべきものがあるか) は `windowFrameLocalRect` (可視部分の
+    ///   bounding box) の nil 判定を使う
+    /// - 描画される Rectangle は `windowFrameShiftedToDisplay` が返す **windowFrame 全体**
+    ///   (display 起点、負値・display 幅超過を含む) に配置する
+    /// - 上に `.frame(width: displayWidth, height: displayHeight)` と `.clipped()` を重ねて
+    ///   自 display 外にはみ出た辺 (= 隣 display に continue する部分) を除去する
+    ///
+    /// これにより、intersection の 4 辺を直接 stroke する旧実装 (C-1 で報告) の「display 境界に
+    /// 太い線が乗る」欠陥が構造的に発生しなくなる。
     ///
     /// 減衰 / 色 / 持続時間は SettingsStore.focus flash 系 (旧「モニタ縁」項目) をそのまま流用
-    /// (DR-0013 決定 1「initial opacity / duration / color は再利用」)。厚み・blur は kawaz 実機
-    /// フィードバックで再調整前提の初期値: 内側 6px + blur 3px (旧 24px + 8px からウィンドウ枠に
-    /// 適したスケールへ縮小)。
+    /// (DR-0013 決定 1「initial opacity / duration / color は再利用」)。厚み (`focusFlashStrokeWidth`) /
+    /// blur (`focusFlashBlurRadius`) も SettingsStore 経由 (DR-0013 追記 M-1)。
     @ViewBuilder
     private var focusFlashView: some View {
         if let flash = model.focusFlash,
            let windowFrame = model.state.focusFlash?.windowFrame,
            let selfDisplay = model.state.displays.first(where: { $0.id == displayId }),
-           let localRect = windowFrameLocalRect(windowFrame: windowFrame, displayBounds: selfDisplay.logicalBounds) {
-            let width = localRect.maxX - localRect.minX
-            let height = localRect.maxY - localRect.minY
+           windowFrameLocalRect(windowFrame: windowFrame, displayBounds: selfDisplay.logicalBounds) != nil {
+            let displayBounds = selfDisplay.logicalBounds
+            let drawRect = windowFrameShiftedToDisplay(windowFrame: windowFrame, displayBounds: displayBounds)
+            let drawWidth = drawRect.maxX - drawRect.minX
+            let drawHeight = drawRect.maxY - drawRect.minY
+            let displayWidth = displayBounds.maxX - displayBounds.minX
+            let displayHeight = displayBounds.maxY - displayBounds.minY
             // 色は SettingsStore 経由 (DR-0012)。alpha は color.a * flash.opacity の乗算。
             let ff = model.focusFlashColor
             let strokeColor = Color(.sRGB, red: ff.r, green: ff.g, blue: ff.b, opacity: ff.a * flash.opacity)
-            let strokeThickness: CGFloat = 6
-            Rectangle()
-                .inset(by: strokeThickness / 2)
-                .stroke(strokeColor, lineWidth: strokeThickness)
-                .blur(radius: 3)
-                .frame(width: width, height: height)
-                .position(x: localRect.minX + width / 2, y: localRect.minY + height / 2)
-                .allowsHitTesting(false)
+            let strokeThickness = CGFloat(model.focusFlashStrokeWidth)
+            let blurRadius = CGFloat(model.focusFlashBlurRadius)
+            // Rectangle を windowFrame 全体 (display 起点、負値含む) に配置。display 外に出た辺は
+            // 上の .clipped() で切り取られるため、モニタまたぎ時も display 境界に辺が乗らない。
+            ZStack {
+                Rectangle()
+                    .inset(by: strokeThickness / 2)
+                    .stroke(strokeColor, lineWidth: strokeThickness)
+                    .blur(radius: blurRadius)
+                    .frame(width: drawWidth, height: drawHeight)
+                    .position(x: drawRect.minX + drawWidth / 2, y: drawRect.minY + drawHeight / 2)
+            }
+            .frame(width: displayWidth, height: displayHeight, alignment: .topLeading)
+            .clipped()
+            .allowsHitTesting(false)
         }
     }
 
@@ -156,7 +174,12 @@ struct LaserOverlayView: View {
         // #3 DR-0013: standoff は SettingsStore `laserStandoffPx` (px 固定値、既定 40) を直接使う。
         // 頂点辺半幅 tipHalfWidth は 0 に固定 (path は 3 頂点の完全な三角形)。ポインタが角から
         // standoff+minLength 以下の距離だと taperApexPoint が nil を返し描画不能扱い。
-        let standoff = CGFloat(model.laserStandoffPx)
+        //
+        // DR-0013 追記 M-2: UI Slider は 0...200 で範囲保証されるが、旧 JSON / 手動編集で負値が
+        // 入る余地に対する防衛として `max(0, ...)` で clamp する。負値の standoff は幾何的に意味が
+        // 無く (target を通り越した先に頂点を作ろうとする)、taperApexPoint の nil 判定を経ずに
+        // 描画が破綻し得るため。
+        let standoff = CGFloat(max(0, model.laserStandoffPx))
         guard let apex = LaserGeometry.taperApexPoint(from: corner, to: pointer, standoff: standoff)
         else { return }
 
@@ -196,16 +219,23 @@ struct LaserOverlayView: View {
     }
 }
 
-/// ウィンドウ枠 (CG グローバル論理座標) を自 display の view-local 座標系 (top-left 原点、px)
-/// にクリップして返す純関数 (DR-0013 決定 1)。
+/// ウィンドウ枠と自 display の交差部分 (可視部分の bounding box) を view-local 座標系
+/// (top-left 原点、px) で返す純関数 (DR-0013 決定 1)。
+///
+/// **注意 (DR-0013 追記 C-1)**: 本関数の返り値は「display 内の可視部分の bounding box」であって、
+/// **描画すべき Rectangle の frame ではない**。この rect の 4 辺を単純に stroke すると、モニタ
+/// またぎ時に display 境界に沿った辺 (= 実際のウィンドウ枠ではない側の辺) に線が乗り、両 overlay
+/// の境界辺が繋がって「モニタ境界に太い線」となる描画欠陥を生む。描画には
+/// `windowFrameShiftedToDisplay` (windowFrame 全体を display 起点にシフトした rect、負値含む) +
+/// SwiftUI 側 `.clipped()` を使うこと。
 ///
 /// - `windowFrame`: 震源ウィンドウ全体の CG グローバル rect
 /// - `displayBounds`: 自 display の CG グローバル bounds
 /// - 返り値: `windowFrame ∩ displayBounds` を `displayBounds.min` で減算した view-local rect。
-///   交差が空 (接するだけ含む) の場合は nil (= 自 display に描くべきものが無い)
+///   交差が空 (接するだけ含む) の場合は nil (= 自 display に描くべきものが無い、描画スキップ)
 ///
-/// モニタまたぎのウィンドウはそれぞれの overlay が本関数で自分の担当部分を計算し、非交差の
-/// overlay は描画をスキップする (LaserOverlayView.focusFlashView が判定に使う)。
+/// 使い所: 描画対象の有無を判定する (nil ⇒ 描画スキップ) 用途。
+/// モニタまたぎのウィンドウはそれぞれの overlay が本関数の nil 判定で自分の描画有無を決める。
 func windowFrameLocalRect(windowFrame: LogicalRect, displayBounds: LogicalRect) -> LogicalRect? {
     let minX = max(windowFrame.minX, displayBounds.minX)
     let minY = max(windowFrame.minY, displayBounds.minY)
@@ -218,4 +248,28 @@ func windowFrameLocalRect(windowFrame: LogicalRect, displayBounds: LogicalRect) 
         minY: minY - displayBounds.minY,
         maxX: maxX - displayBounds.minX,
         maxY: maxY - displayBounds.minY)
+}
+
+/// ウィンドウ枠**全体**を自 display の view-local 座標系 (top-left 原点、px) にシフトして返す
+/// 描画用の純関数 (DR-0013 追記 C-1)。
+///
+/// `windowFrameLocalRect` (= intersection、可視部分の bbox) と対をなす。描画側は本関数の返す rect
+/// を `Rectangle().stroke(...)` の frame として配置し、SwiftUI の `.frame(width: displayWidth,
+/// height: displayHeight).clipped()` で自 display の表示領域 [0, displayWidth] × [0, displayHeight]
+/// に切る。この構成により、モニタまたぎ時の「実際のウィンドウ枠でない側の辺」は clip されて描画されず、
+/// 反対側の overlay window が担当する辺だけがそちらでレンダされる。
+///
+/// - `windowFrame`: 震源ウィンドウ全体の CG グローバル rect
+/// - `displayBounds`: 自 display の CG グローバル bounds
+/// - 返り値: `windowFrame.min/max` を `displayBounds.min` で減算しただけの view-local rect。
+///   windowFrame が display 外にはみ出る成分は負値 / display 幅超過値としてそのまま残る (clip は SwiftUI 側)
+///
+/// 交差なし判定 (= 描画スキップ) は `windowFrameLocalRect` の nil 判定を呼び出し側で使う。
+/// 本関数自体は判定機能を持たない (幾何変換だけを純粋に責務化して、テスト意味論を「単純減算の一致」に絞る)。
+func windowFrameShiftedToDisplay(windowFrame: LogicalRect, displayBounds: LogicalRect) -> LogicalRect {
+    LogicalRect(
+        minX: windowFrame.minX - displayBounds.minX,
+        minY: windowFrame.minY - displayBounds.minY,
+        maxX: windowFrame.maxX - displayBounds.minX,
+        maxY: windowFrame.maxY - displayBounds.minY)
 }
